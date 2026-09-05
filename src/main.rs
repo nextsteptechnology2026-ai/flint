@@ -174,6 +174,8 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Buffer anterior", Action::PrevBuffer),
         ("Cerrar buffer", Action::CloseBuffer),
         ("Alternar ajuste de línea", Action::ToggleWrap),
+        ("Indentar líneas (Tab)", Action::InsertTab),
+        ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
     ];
     let mut entries: Vec<PaletteEntry> = items
         .iter()
@@ -1094,7 +1096,18 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         Action::InsertNewline => app.buffers[app.active].ed.insert_newline(),
         Action::Backspace => app.buffers[app.active].ed.backspace(),
         Action::DeleteForward => app.buffers[app.active].ed.delete_forward(),
-        Action::InsertTab => app.buffers[app.active].ed.insert_char('\t'),
+        // Con una selección de varias líneas, Tab indenta el bloque en vez de
+        // reemplazarlo por un tabulador — que es lo que haría cualquier otra
+        // inserción, y nunca es lo que se quiso.
+        Action::InsertTab => {
+            let ed = &mut app.buffers[app.active].ed;
+            if ed.selection_spans_lines() {
+                ed.indent_lines();
+            } else {
+                ed.insert_char('\t');
+            }
+        }
+        Action::Unindent => app.buffers[app.active].ed.unindent_lines(),
         Action::SelectWord => {
             app.buffers[app.active].ed.status = if app.buffers[app.active].ed.select_word() {
                 "Palabra seleccionada".to_string()

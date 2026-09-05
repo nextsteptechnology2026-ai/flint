@@ -1015,6 +1015,135 @@ impl Editor {
         });
     }
 
+    /// ¿Alguna selección abarca más de una línea? Es lo que decide si Tab
+    /// indenta el bloque o inserta un tabulador suelto: reemplazar varias
+    /// líneas seleccionadas por un `\t` nunca es lo que alguien quiso.
+    pub fn selection_spans_lines(&self) -> bool {
+        self.selections_snapshot()
+            .iter()
+            .any(|s| s.anchor.line != s.cursor.line)
+    }
+
+    /// Las líneas que tocan las selecciones actuales, sin repetir y en orden.
+    /// Una selección que termina justo en la columna 0 de una línea (lo que
+    /// pasa al arrastrar hasta el renglón siguiente) no cuenta esa última
+    /// línea: no hay nada suyo seleccionado ahí, e indentarla sorprendería.
+    fn lines_touched(&self) -> Vec<usize> {
+        let last_line = self.line_count().saturating_sub(1);
+        let mut lines: Vec<usize> = Vec::new();
+        for sel in self.selections_snapshot() {
+            let (start, end) = if (sel.anchor.line, sel.anchor.col) <= (sel.cursor.line, sel.cursor.col) {
+                (sel.anchor, sel.cursor)
+            } else {
+                (sel.cursor, sel.anchor)
+            };
+            let end_line = if end.line > start.line && end.col == 0 {
+                end.line - 1
+            } else {
+                end.line
+            };
+            lines.extend(start.line..=end_line.min(last_line));
+        }
+        lines.sort_unstable();
+        lines.dedup();
+        lines
+    }
+
+    /// Suma un nivel de indentación (un `\t`) al principio de cada línea que
+    /// toquen las selecciones, y las conserva — así se puede apretar Tab
+    /// varias veces seguidas sobre el mismo bloque, en vez de perder la
+    /// selección en la primera.
+    pub fn indent_lines(&mut self) {
+        let lines = self.lines_touched();
+        if lines.is_empty() {
+            return;
+        }
+        self.checkpoint(EditKind::Other);
+        let mut sels = self.selections_snapshot();
+        // De abajo hacia arriba: insertar en una línea no corre los índices
+        // de carácter de las que están más arriba.
+        for &line in lines.iter().rev() {
+            let at = self.rope.line_to_char(line);
+            self.rope.insert_char(at, '\t');
+        }
+        for sel in &mut sels {
+            for p in [&mut sel.anchor, &mut sel.cursor] {
+                // La columna 0 se queda en 0: es donde suele estar el extremo
+                // de una selección de líneas enteras, y correrla dejaría el
+                // bloque seleccionado a partir del segundo carácter.
+                if p.col > 0 && lines.binary_search(&p.line).is_ok() {
+                    p.col += 1;
+                }
+            }
+        }
+        self.apply_selections(sels);
+        self.after_multiline_edit();
+    }
+
+    /// Lo contrario: saca un nivel de indentación de cada línea tocada — un
+    /// `\t`, o hasta `tab_width` espacios si esa línea usa espacios. Las
+    /// líneas que ya empiezan pegadas al margen se dejan como están.
+    pub fn unindent_lines(&mut self) {
+        // Cuánto sacarle a cada línea, calculado contra el rope intacto. Si
+        // no hay nada que sacar en ninguna, se vuelve sin tocar el buffer:
+        // ni marcarlo como sucio ni gastar un paso de deshacer.
+        let removals: Vec<(usize, usize)> = self
+            .lines_touched()
+            .into_iter()
+            .filter_map(|line| {
+                let n = self.indent_chars_to_remove(line);
+                (n > 0).then_some((line, n))
+            })
+            .collect();
+        if removals.is_empty() {
+            return;
+        }
+        self.checkpoint(EditKind::Other);
+        let mut sels = self.selections_snapshot();
+        for &(line, n) in removals.iter().rev() {
+            let at = self.rope.line_to_char(line);
+            self.rope.remove(at..at + n);
+        }
+        for sel in &mut sels {
+            for p in [&mut sel.anchor, &mut sel.cursor] {
+                if let Ok(i) = removals.binary_search_by_key(&p.line, |&(l, _)| l) {
+                    p.col = p.col.saturating_sub(removals[i].1);
+                }
+            }
+        }
+        self.apply_selections(sels);
+        self.after_multiline_edit();
+    }
+
+    /// Cuántos caracteres hay que sacarle al principio de `line` para quitarle
+    /// un nivel de indentación: 1 si arranca con tabulador, o los espacios que
+    /// tenga hasta un máximo de `tab_width`.
+    fn indent_chars_to_remove(&self, line: usize) -> usize {
+        let mut n = 0;
+        for (i, c) in self.rope.line(line).chars().enumerate() {
+            if i == 0 && c == '\t' {
+                return 1;
+            }
+            if c == ' ' && i < self.tab_width {
+                n = i + 1;
+            } else {
+                break;
+            }
+        }
+        n
+    }
+
+    /// Cierre común de indentar/des-indentar: son varias ediciones a la vez,
+    /// que el protocolo de LSP no modela como deltas simultáneos (ver el
+    /// comentario en `edit_all_selections`), así que se pide resincronización
+    /// completa en vez de arriesgar un documento desalineado del lado del
+    /// servidor.
+    fn after_multiline_edit(&mut self) {
+        self.needs_full_lsp_sync = true;
+        self.pending_lsp_edits.clear();
+        self.mark_changed();
+    }
+
     /// El espacio en blanco (espacios/tabs) al principio de `line`.
     fn leading_whitespace(rope: &Rope, line: usize) -> String {
         let mut s = String::new();

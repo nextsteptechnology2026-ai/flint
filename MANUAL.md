@@ -62,7 +62,9 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Shift` + cualquiera de las anteriores | Mover extendiendo la selección |
 | Cualquier carácter | Se inserta en el cursor (y reemplaza la selección, si hay una) |
 | `Enter` | Línea nueva, con auto-indentación (copia el espacio en blanco inicial de la línea actual) |
-| `Tab` / `Backspace` / `Delete` | Los de siempre |
+| `Tab` | Inserta un tabulador. Con una selección que abarca varias líneas, indenta todas esas líneas (y las deja seleccionadas, así se puede repetir) |
+| `Shift+Tab` | Saca un nivel de indentación de cada línea tocada: un tabulador, o hasta `tab_width` espacios si la línea usa espacios |
+| `Backspace` / `Delete` | Los de siempre |
 
 La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplazar (regex)…" — mismo flujo que `Ctrl+F`/`Ctrl+R`, pero el texto se interpreta como expresión regular (sintaxis del crate `regex` de Rust) en vez de texto literal; el reemplazo admite grupos capturados (`$1`, `${nombre}`). No tienen atajo de teclado propio, para no arriesgar un choque con la búsqueda literal.
 

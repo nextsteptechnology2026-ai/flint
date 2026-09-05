@@ -48,6 +48,7 @@ pub enum Action {
     Backspace,
     DeleteForward,
     InsertTab,
+    Unindent,
     SelectWord,
     SelectLine,
     ExpandSelection,
@@ -131,6 +132,10 @@ pub fn chord_from_event(key: &KeyEvent) -> Option<KeyChord> {
         KeyCode::PageDown => KeyToken::PageDown,
         KeyCode::Enter => KeyToken::Enter,
         KeyCode::Tab => KeyToken::Tab,
+        // Shift+Tab no llega como Tab+SHIFT: la terminal manda su propio
+        // código. Se normaliza al mismo token para que quede expresado como
+        // el chord "Tab con shift", igual que Shift+flecha.
+        KeyCode::BackTab => KeyToken::Tab,
         KeyCode::Backspace => KeyToken::Backspace,
         KeyCode::Delete => KeyToken::Delete,
         KeyCode::Esc => KeyToken::Esc,
@@ -141,7 +146,10 @@ pub fn chord_from_event(key: &KeyEvent) -> Option<KeyChord> {
     let shift = if matches!(token, KeyToken::Char(_)) {
         false
     } else {
-        shift_mod
+        // `BackTab` ya *es* Shift+Tab; algunas terminales además mandan el
+        // modificador y otras no, así que se da por puesto en vez de confiar
+        // en que venga.
+        shift_mod || key.code == KeyCode::BackTab
     };
     Some(KeyChord { token, ctrl, shift })
 }
@@ -187,6 +195,7 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::PageUp), PrevBuffer);
     d(KeyChord::plain(T::Enter), InsertNewline);
     d(KeyChord::plain(T::Tab), InsertTab);
+    d(KeyChord::with_shift(T::Tab), Unindent);
     d(KeyChord::plain(T::Backspace), Action::Backspace);
     d(KeyChord::plain(T::Delete), DeleteForward);
     d(KeyChord::plain(T::Left), MoveLeft(false));
