@@ -1483,3 +1483,105 @@ impl Editor {
     }
 }
 
+
+/// Tests de la aritmética de columnas y de indentación: lógica pura, sin
+/// terminal de por medio. Es justo la parte que se rompe callada — un cursor
+/// una columna corrida no tira ningún error, solo se ve mal — así que es
+/// donde una prueba automática paga más que la verificación a mano.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un buffer en memoria con este contenido, sin tocar el disco.
+    fn ed(text: &str) -> Editor {
+        let mut e = Editor::open(None).expect("un buffer sin archivo no toca el disco");
+        e.rope = Rope::from_str(text);
+        e
+    }
+
+    fn sel(anchor: (usize, usize), cursor: (usize, usize)) -> Selection {
+        Selection {
+            anchor: Position { line: anchor.0, col: anchor.1 },
+            cursor: Position { line: cursor.0, col: cursor.1 },
+        }
+    }
+
+    #[test]
+    fn el_tabulador_se_estira_hasta_la_proxima_parada() {
+        assert_eq!(char_display_width('\t', 0, 4), 4);
+        assert_eq!(char_display_width('\t', 1, 4), 3);
+        assert_eq!(char_display_width('\t', 3, 4), 1);
+        assert_eq!(char_display_width('\t', 4, 4), 4);
+    }
+
+    #[test]
+    fn no_todos_los_caracteres_miden_una_columna() {
+        assert_eq!(char_display_width('a', 0, 4), 1);
+        assert_eq!(char_display_width('日', 0, 4), 2);
+        assert_eq!(char_display_width('😀', 0, 4), 2);
+        // Un acento combinante se pinta sobre la letra anterior: cero columnas.
+        assert_eq!(char_display_width('\u{301}', 0, 4), 0);
+    }
+
+    #[test]
+    fn display_col_cuenta_columnas_no_caracteres() {
+        let e = ed("a\tb\n日本語x\n");
+        assert_eq!(e.display_col(0, 1), 1);
+        assert_eq!(e.display_col(0, 2), 4, "el tabulador llega a la columna 4");
+        assert_eq!(e.display_col(0, 3), 5);
+        assert_eq!(e.line_display_width(0), 5);
+        assert_eq!(e.display_col(1, 3), 6, "tres caracteres CJK son seis columnas");
+        assert_eq!(e.line_display_width(1), 7);
+    }
+
+    #[test]
+    fn col_from_display_es_el_inverso_y_nunca_cae_a_la_mitad() {
+        let e = ed("a\tb\n日本語x\n");
+        assert_eq!(e.col_from_display(0, 0), 0);
+        assert_eq!(e.col_from_display(0, 2), 1, "un clic dentro del tabulador da el tabulador");
+        assert_eq!(e.col_from_display(0, 4), 2);
+        assert_eq!(e.col_from_display(0, 99), 3, "pasado el final, el final de la línea");
+        // La mitad derecha de un carácter ancho devuelve ese carácter: no hay
+        // una posición del buffer a mitad de camino donde poner el cursor.
+        assert_eq!(e.col_from_display(1, 2), 1);
+        assert_eq!(e.col_from_display(1, 3), 1);
+        assert_eq!(e.col_from_display(1, 4), 2);
+    }
+
+    #[test]
+    fn indentar_no_borra_la_seleccion_ni_el_texto() {
+        let mut e = ed("uno\ndos\ntres\n");
+        e.apply_selections(vec![sel((0, 0), (1, 3))]);
+        e.indent_lines();
+        assert_eq!(e.rope.to_string(), "\tuno\n\tdos\ntres\n");
+        // La selección sobrevive, así que apretar Tab de nuevo sube otro nivel
+        // en vez de reemplazar el bloque.
+        assert!(e.selection_spans_lines());
+        e.indent_lines();
+        assert_eq!(e.rope.to_string(), "\t\tuno\n\t\tdos\ntres\n");
+    }
+
+    #[test]
+    fn una_seleccion_que_termina_en_la_columna_cero_no_arrastra_esa_linea() {
+        let mut e = ed("uno\ndos\ntres\n");
+        e.apply_selections(vec![sel((0, 0), (1, 0))]);
+        e.indent_lines();
+        assert_eq!(e.rope.to_string(), "\tuno\ndos\ntres\n");
+    }
+
+    #[test]
+    fn des_indentar_respeta_con_que_esta_indentada_cada_linea() {
+        let mut e = ed("\tcon tab\n        con espacios\nsin nada\n");
+        e.apply_selections(vec![sel((0, 0), (2, 3))]);
+        e.unindent_lines();
+        assert_eq!(e.rope.to_string(), "con tab\n    con espacios\nsin nada\n");
+    }
+
+    #[test]
+    fn des_indentar_sin_nada_que_sacar_no_ensucia_el_buffer() {
+        let mut e = ed("sin nada\n");
+        e.unindent_lines();
+        assert!(!e.dirty, "no se tocó el buffer: no debería quedar marcado como sucio");
+        assert_eq!(e.rope.to_string(), "sin nada\n");
+    }
+}

@@ -934,3 +934,60 @@ pub fn screen_to_pos(ed: &Editor, text_area: Rect, col: u16, row: u16) -> Option
         line += 1;
     }
 }
+
+/// Tests de la expansión de una línea a columnas de pantalla — el punto donde
+/// se juntan tabuladores, caracteres anchos y marcas combinantes, y donde un
+/// error se ve como texto corrido en vez de como un error.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chars(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    #[test]
+    fn un_caracter_ancho_ocupa_dos_columnas() {
+        let c = chars("日x");
+        let line = LineCells::new(&c, 4);
+        assert_eq!(line.len(), 3);
+        assert_eq!(line.text(0, 3), "日x");
+    }
+
+    #[test]
+    fn un_caracter_ancho_partido_por_el_borde_se_dibuja_como_espacio() {
+        let c = chars("日x");
+        let line = LineCells::new(&c, 4);
+        // Solo entra su primera mitad: medio glifo no se puede dibujar.
+        assert_eq!(line.text(0, 1), " ");
+        // Y del otro lado, arrancando en la segunda mitad del que quedó afuera.
+        assert_eq!(line.text(1, 3), " x");
+    }
+
+    #[test]
+    fn las_marcas_combinantes_viajan_con_su_letra() {
+        let c = chars("e\u{301}x");
+        let line = LineCells::new(&c, 4);
+        assert_eq!(line.len(), 2, "el acento no ocupa columna propia");
+        assert_eq!(line.text(0, 2), "e\u{301}x", "y no se pierde por el camino");
+    }
+
+    #[test]
+    fn el_tabulador_se_dibuja_como_espacios_hasta_la_parada() {
+        let c = chars("a\tb");
+        let line = LineCells::new(&c, 4);
+        assert_eq!(line.len(), 5);
+        assert_eq!(line.text(0, 5), "a   b");
+    }
+
+    #[test]
+    fn los_rangos_en_caracteres_se_traducen_a_columnas() {
+        let c = chars("a\t日b");
+        let line = LineCells::new(&c, 4);
+        // El tabulador es el carácter 1 y ocupa las columnas 1..4.
+        assert_eq!(line.cell_range(1, 2), (1, 4));
+        // El CJK es el carácter 2 y ocupa las columnas 4..6: un resaltado que
+        // lo toque tiene que pintar las dos, no media letra.
+        assert_eq!(line.cell_range(2, 3), (4, 6));
+    }
+}
