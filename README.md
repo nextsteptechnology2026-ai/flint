@@ -37,7 +37,9 @@ Flint no te hace elegir. Arranca en modo directo, sin nada que aprender, y todo 
 
 ## Instalación
 
-**Paquete `.deb`** (Debian, Ubuntu, Kali y derivados). La máquina donde se instala **no** necesita tener Rust:
+**Binarios ya compilados** — la vía más corta, sin necesidad de Rust: en [releases](https://github.com/nextsteptechnology2026-ai/flint/releases) hay un `.deb` para Debian y derivadas, y un `.tar.gz` para cualquier otro Linux x86_64 (con `sha256sums.txt` para verificarlos).
+
+**Paquete `.deb` armado por vos** (Debian, Ubuntu, Kali y derivados). La máquina donde se instala **no** necesita tener Rust:
 
 ```sh
 bash packaging/build-deb.sh                       # compila y arma el paquete

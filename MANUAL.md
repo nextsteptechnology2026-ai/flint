@@ -20,7 +20,11 @@ sudo apt install ./target/deb/flint_*_amd64.deb  # instala (acá no hace falta R
 sudo apt remove flint                            # desinstalar
 ```
 
-El script calcula las dependencias reales del binario (`dpkg-shlibdeps`, no una lista a mano) y deja el `.deb` en `target/deb/`. Instala `flint` en `/usr/bin/`, y el `README.md`/`MANUAL.md`/`theme.example.toml`/`plugins/ejemplo.lua` de referencia en `/usr/share/doc/flint/` y `/usr/share/flint/plugins/`.
+**Opción 3 — descargar un binario ya compilado** de la página de releases (https://github.com/nextsteptechnology2026-ai/flint/releases): el `.deb` para Debian y derivadas, o el `.tar.gz` para cualquier otra distro de Linux x86_64 (trae el binario, la documentación, el tema de ejemplo y los plugins). El `sha256sums.txt` de la misma release permite verificarlos.
+
+Para publicar una release nueva: subir `version` en `Cargo.toml`, commitear, y empujar una etiqueta `vX.Y.Z` — el workflow `release.yml` compila, corre los tests, arma los dos paquetes y los adjunta solo si la etiqueta coincide con `Cargo.toml`.
+
+El script del `.deb` calcula las dependencias reales del binario (`dpkg-shlibdeps`, no una lista a mano) y deja el `.deb` en `target/deb/`. Instala `flint` en `/usr/bin/`, y el `README.md`/`MANUAL.md`/`theme.example.toml`/`plugins/ejemplo.lua` de referencia en `/usr/share/doc/flint/` y `/usr/share/flint/plugins/`.
 
 ```sh
 flint                                  # buffer sin nombre

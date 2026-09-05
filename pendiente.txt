@@ -30,9 +30,9 @@ Chicos:
    que la pantalla entera (rarísimo): se muestra desde su principio.
 7. La auto-indentación copia el espacio en blanco de la línea anterior y
    nada más — no entiende llaves ni paréntesis, que depende del lenguaje.
-8. Distribución más allá del .deb: binarios adjuntos a una release de GitHub
-   y una fórmula de Homebrew. Estaban bloqueados por no haber repositorio
-   público; desde el 2026-09-05 lo hay, así que dejaron de estarlo.
+8. Homebrew: una fórmula para instalar en macOS/Linux con `brew`. Necesita
+   además decidir si se compila desde fuente en la máquina del usuario o se
+   publican binarios de macOS, que hoy no se construyen.
 
 Hecho desde la versión anterior de este archivo (no volver a anotarlo):
 - Empaquetado .deb (packaging/build-deb.sh).
@@ -61,6 +61,9 @@ Hecho desde la versión anterior de este archivo (no volver a anotarlo):
 - Con ajuste de línea, las filas se cortan donde el próximo carácter no entra
   en vez de en una grilla fija cada content_w: un carácter ancho ya no queda
   partido (y por lo tanto sin dibujarse) en el borde de una fila.
+- Releases con binarios ya compilados (.github/workflows/release.yml): al
+  empujar una etiqueta vX.Y.Z se publican el .deb, un tar.gz para cualquier
+  Linux x86_64 y sus sha256, si la etiqueta coincide con Cargo.toml.
 
 Nota sobre el CI: no corre `cargo fmt --check`. El código tiene un estilo
 propio deliberado y nadie verificó todavía si pasa rustfmt tal cual; meterlo

@@ -1,0 +1,69 @@
+# Publica una release con binarios ya compilados cuando se empuja una
+# etiqueta `vX.Y.Z`. Quien la instale no necesita tener Rust: para eso están
+# el `.deb` (Debian/Ubuntu/Kali) y el tar.gz con el binario suelto para
+# cualquier otra distro de Linux x86_64.
+#
+# Igual que el CI, sin acciones de terceros: `gh` ya viene instalado en el
+# runner y se autentica con el token del propio workflow.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  # Necesario para crear la release y subirle archivos.
+  contents: write
+
+jobs:
+  publicar:
+    name: Compilar y publicar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Una etiqueta v0.1.4 sobre un Cargo.toml que dice 0.1.3 publicaría un
+      # paquete cuyo nombre y versión interna no coinciden con la release.
+      # Mejor fallar acá, ruidosamente, que publicarlo.
+      - name: La etiqueta tiene que coincidir con Cargo.toml
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cargo_version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::La etiqueta $GITHUB_REF_NAME dice $version y Cargo.toml dice $cargo_version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # No se publica algo que no pasa sus propias pruebas.
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Construir el .deb
+        run: bash packaging/build-deb.sh
+
+      # El .deb solo sirve en Debian y derivadas; el tar.gz es para cualquier
+      # otra distro x86_64. Lleva la documentación y el tema de ejemplo para
+      # que sea autocontenido, igual que el paquete.
+      - name: Empaquetar el binario suelto
+        run: |
+          dir="flint-${VERSION}-x86_64-linux"
+          mkdir -p "dist/$dir"
+          cp target/release/flint "dist/$dir/"
+          strip --strip-unneeded "dist/$dir/flint"
+          cp README.md MANUAL.md LICENSE theme.example.toml "dist/$dir/"
+          cp -a plugins "dist/$dir/"
+          tar -czf "dist/$dir.tar.gz" -C dist "$dir"
+          sha256sum "dist/$dir.tar.gz" target/deb/flint_*.deb > dist/sha256sums.txt
+          cat dist/sha256sums.txt
+
+      - name: Publicar la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Flint $GITHUB_REF_NAME" \
+            --generate-notes \
+            target/deb/flint_*_amd64.deb \
+            "dist/flint-${VERSION}-x86_64-linux.tar.gz" \
+            dist/sha256sums.txt
