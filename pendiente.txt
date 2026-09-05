@@ -1,18 +1,48 @@
-Con todo lo hecho hasta ahora (multi-buffer, portapapeles del sistema, CRLF, re-detección en "Guardar como", búsqueda/reemplazo/resaltado más eficientes), esto es lo que queda:
+Lo que queda por hacer en Flint.
+
+Este archivo se reescribió el 2026-09-05: la mitad de abajo había quedado
+pisada y era ilegible, y varios puntos ya estaban hechos. Cada punto de acá
+se verificó contra el código antes de anotarlo.
 
 Medianos:
-1. LSP solo para Rust — Python/JSON/TOML tienen resaltado de sintaxis pero no diagnósticos ni autocompletado reales (harían falta pylsp/pyright, etc.).
-2. Cero tests automatizados — todo se verificó a mano con tmux; no hay red de seguridad ante un refactor futuro.
-3. Perfiles de teclado fijos — solo Flint/Vim/Emacs hardcodeados en el código; no se puede definir un perfil propio en un archivo.
-4. Plugins Lua limitados — pueden registrar comandos e insertar texto, pero no pueden bindear teclas propias, leer/mover la selección, ni tocar el portapapeles.
+1. LSP solo para Rust — Python/JSON/TOML tienen resaltado de sintaxis pero no
+   diagnósticos ni autocompletado reales (harían falta pylsp/pyright, etc.).
+2. Perfiles de teclado fijos — solo Flint/Vim/Emacs, hardcodeados en
+   keymap.rs; no se puede definir un perfil propio en un archivo.
+3. Plugins Lua limitados — la API es register_command, status, insert_text,
+   filename y line_count. No pueden bindear teclas propias, leer o mover la
+   selección, tocar el portapapeles, ni definir colores de sintaxis para un
+   lenguaje nuevo.
+4. Tests todavía flacos — ya no son cero (editor.rs y ui.rs cubren la
+   aritmética de columnas y la indentación, y se comprobó que fallan al
+   romper el código a propósito), pero no hay nada que cubra edición,
+   deshacer/rehacer, multi-cursor, búsqueda ni LSP.
 
 Chicos:
-6. Sincronización LSP no incremental (manda el documento completo en cada cambio, no un diff).
-7. El autocompletado inserta la sugerencia completa sin filtrar por lo ya escrito, y nol servidor.
-8. Los diagnósticoa, no por el rangoexacto de columnas que reporta el servidor.
-9. select_word (w)in reglas Unicode
-finas de límites d
-10. El tema no disminal ni se recarga
-en caliente (hay q
-11. Un plugin no p de colores desintaxis para un l12. La barra de peouse (soloCtrl+PageUp/Down/paleta).                                        13. El resaltado dpor recálculo (semitigó con debounc real de tree-sitter es una reescriturarromper el árbol si
-se hace mal).
+5. El resaltado de sintaxis recalcula todo el documento en vez de reusar el
+   árbol. Se mitigó con un debounce de 120 ms (HIGHLIGHT_DEBOUNCE), pero el
+   incremental de verdad de tree-sitter es una reescritura, y hecho a medias
+   deja el árbol corrupto en silencio.
+6. Con ajuste de línea, un carácter ancho (CJK, emoji) que cae justo en la
+   última columna de una fila se dibuja como espacio en las dos filas en vez
+   de pasar entero a la siguiente. El buffer está intacto: se ve un hueco.
+   Arreglarlo es que las filas dejen de ser una grilla fija de content_w y se
+   corten donde el próximo carácter no entra — toca draw_text_wrapped, el
+   cálculo de scroll y screen_to_pos.
+7. Con ajuste de línea no se puede desplazar *dentro* de una línea más alta
+   que la pantalla entera (rarísimo): se muestra desde su principio.
+8. La auto-indentación copia el espacio en blanco de la línea anterior y
+   nada más — no entiende llaves ni paréntesis, que depende del lenguaje.
+
+Hecho desde la versión anterior de este archivo (no volver a anotarlo):
+- Empaquetado .deb (packaging/build-deb.sh).
+- Sincronización LSP incremental, con deltas en vez del documento completo.
+- El autocompletado filtra por lo tipeado y reemplaza ese prefijo al aceptar.
+- Los diagnósticos subrayan el rango exacto de columnas del servidor.
+- select_word usa límites de palabra Unicode reales (split_word_bounds).
+- El tema se recarga en caliente al guardar theme.toml.
+- La barra de pestañas responde al mouse.
+- Tabuladores, CJK, emoji y marcas combinantes se miden en columnas de
+  pantalla reales (cursor, scroll, wrap y clics incluidos).
+- Tab indenta el bloque seleccionado en vez de borrarlo; Shift+Tab
+  des-indenta.
