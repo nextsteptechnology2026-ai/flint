@@ -1,5 +1,8 @@
 # Flint
 
+[![CI](https://github.com/nextsteptechnology2026-ai/flint/actions/workflows/ci.yml/badge.svg)](https://github.com/nextsteptechnology2026-ai/flint/actions/workflows/ci.yml)
+[![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
+
 Editor de terminal en Rust. Abre como `nano` —las teclas hacen lo que dicen— y suma, encima, una capa modal opcional a un `F2` de distancia. Resaltado de sintaxis y LSP reales vía tree-sitter, multi-cursor, temas en TOML con recarga en caliente y plugins en Lua.
 
 ```
