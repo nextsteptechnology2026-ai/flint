@@ -6,7 +6,10 @@ se verificó contra el código antes de anotarlo.
 
 Medianos:
 1. LSP solo para Rust — Python/JSON/TOML tienen resaltado de sintaxis pero no
-   diagnósticos ni autocompletado reales (harían falta pylsp/pyright, etc.).
+   diagnósticos ni nada que entienda el lenguaje (harían falta pylsp/pyright,
+   etc.). El autocompletado ya no está en esta lista: sin servidor completa
+   con las palabras del propio texto, que en cualquier archivo es mejor que
+   nada, pero sigue sin saber qué es un método ni un tipo.
 2. Perfiles de teclado fijos — solo Flint/Vim/Emacs, hardcodeados en
    keymap.rs; no se puede definir un perfil propio en un archivo.
 3. Plugins Lua limitados — la API es register_command, status, insert_text,
@@ -54,6 +57,13 @@ Hecho desde la versión anterior de este archivo (no volver a anotarlo):
   por .deb no cargaba ninguno.
 - CI en GitHub Actions (.github/workflows/ci.yml): compila, corre los tests y
   clippy sin warnings en cada push y cada pull request.
+- Autocompletado en archivos sin servidor de lenguaje: completa con las
+  palabras que ya están escritas en el buffer (sin distinguir mayúsculas,
+  ordenadas por cercanía al cursor), y también cuando hay servidor pero no
+  devolvió sugerencias para esa posición.
+- El ancho del popup de autocompletado y el de la paleta no contaban el
+  espacio inicial de cada línea, así que la etiqueta más larga perdía su
+  último carácter.
 
 Nota sobre el CI: no corre `cargo fmt --check`. El código tiene un estilo
 propio deliberado y nadie verificó todavía si pasa rustfmt tal cual; meterlo
