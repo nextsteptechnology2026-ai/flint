@@ -5,7 +5,6 @@ Medianos:
 2. Cero tests automatizados — todo se verificó a mano con tmux; no hay red de seguridad ante un refactor futuro.
 3. Perfiles de teclado fijos — solo Flint/Vim/Emacs hardcodeados en el código; no se puede definir un perfil propio en un archivo.
 4. Plugins Lua limitados — pueden registrar comandos e insertar texto, pero no pueden bindear teclas propias, leer/mover la selección, ni tocar el portapapeles.
-5. Sin empaquetado/distribución — solo se instala con cargo install --path .; no hay .deb, Homebrew, ni binarios prearmados.
 
 Chicos:
 6. Sincronización LSP no incremental (manda el documento completo en cada cambio, no un diff).
