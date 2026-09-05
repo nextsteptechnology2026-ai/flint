@@ -26,17 +26,11 @@ Chicos:
    árbol. Se mitigó con un debounce de 120 ms (HIGHLIGHT_DEBOUNCE), pero el
    incremental de verdad de tree-sitter es una reescritura, y hecho a medias
    deja el árbol corrupto en silencio.
-6. Con ajuste de línea, un carácter ancho (CJK, emoji) que cae justo en la
-   última columna de una fila se dibuja como espacio en las dos filas en vez
-   de pasar entero a la siguiente. El buffer está intacto: se ve un hueco.
-   Arreglarlo es que las filas dejen de ser una grilla fija de content_w y se
-   corten donde el próximo carácter no entra — toca draw_text_wrapped, el
-   cálculo de scroll y screen_to_pos.
-7. Con ajuste de línea no se puede desplazar *dentro* de una línea más alta
+6. Con ajuste de línea no se puede desplazar *dentro* de una línea más alta
    que la pantalla entera (rarísimo): se muestra desde su principio.
-8. La auto-indentación copia el espacio en blanco de la línea anterior y
+7. La auto-indentación copia el espacio en blanco de la línea anterior y
    nada más — no entiende llaves ni paréntesis, que depende del lenguaje.
-9. Distribución más allá del .deb: binarios adjuntos a una release de GitHub
+8. Distribución más allá del .deb: binarios adjuntos a una release de GitHub
    y una fórmula de Homebrew. Estaban bloqueados por no haber repositorio
    público; desde el 2026-09-05 lo hay, así que dejaron de estarlo.
 
@@ -64,6 +58,9 @@ Hecho desde la versión anterior de este archivo (no volver a anotarlo):
 - El ancho del popup de autocompletado y el de la paleta no contaban el
   espacio inicial de cada línea, así que la etiqueta más larga perdía su
   último carácter.
+- Con ajuste de línea, las filas se cortan donde el próximo carácter no entra
+  en vez de en una grilla fija cada content_w: un carácter ancho ya no queda
+  partido (y por lo tanto sin dibujarse) en el borde de una fila.
 
 Nota sobre el CI: no corre `cargo fmt --check`. El código tiene un estilo
 propio deliberado y nadie verificó todavía si pasa rustfmt tal cual; meterlo

@@ -490,15 +490,6 @@ fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
     }
 }
 
-/// Cuántas filas de pantalla ocupa una línea de `len` caracteres con ajuste
-/// activado — mínimo 1, hasta para una línea vacía.
-fn visual_rows_for_len(len: usize, content_w: usize) -> usize {
-    if content_w == 0 || len == 0 {
-        return 1;
-    }
-    len.div_ceil(content_w)
-}
-
 /// Con ajuste de línea: cada línea lógica larga se parte en varias filas de
 /// pantalla en vez de desplazarse horizontalmente — no hay `col_offset`
 /// (siempre se ve todo el ancho de cada línea, tarde o temprano). Solo la
@@ -531,10 +522,10 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
             let mut cursor_fits = false;
             let last = ed.cursor.line.min(line_count.saturating_sub(1));
             for line in ed.row_offset..=last {
-                let len = ed.line_display_width(line);
-                let line_rows = visual_rows_for_len(len, content_w);
+                let starts = ed.wrap_row_starts(line, content_w);
+                let line_rows = starts.len();
                 if line == ed.cursor.line {
-                    let cursor_sub = (cursor_vis / content_w).min(line_rows.saturating_sub(1));
+                    let cursor_sub = ed.wrap_row_of(&starts, cursor_vis);
                     rows_used += cursor_sub + 1;
                     cursor_fits = rows_used <= visible_rows;
                 } else {
@@ -602,12 +593,15 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
             .collect();
 
         let line = LineCells::new(&chars, ed.tab_width);
-        let sub_rows = visual_rows_for_len(line.len(), content_w.max(1));
-        for sub in 0..sub_rows {
+        // Los cortes los decide el editor (`wrap_row_starts`), no una grilla
+        // fija cada `content_w`: una fila termina antes si el carácter
+        // siguiente no entra entero.
+        let starts = ed.wrap_row_starts(line_idx, content_w.max(1));
+        for (sub, &col_from) in starts.iter().enumerate() {
             if row >= visible_rows {
                 break;
             }
-            let col_from = sub * content_w.max(1);
+            let col_to = starts.get(sub + 1).copied().unwrap_or_else(|| line.len());
             let show_gutter = sub == 0;
             let diag_span = if show_gutter {
                 match ed.diagnostic_severity_for_line(line_idx) {
@@ -635,7 +629,7 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
             spans.extend(build_line_spans(
                 &line,
                 col_from,
-                content_w,
+                col_to.saturating_sub(col_from),
                 highlights,
                 &sel_overlays,
                 &diag_overlays,
@@ -644,7 +638,7 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
             lines.push(Line::from(spans));
 
             if line_idx == ed.cursor.line {
-                let cursor_sub = cursor_vis.checked_div(content_w).unwrap_or(0);
+                let cursor_sub = ed.wrap_row_of(&starts, cursor_vis);
                 if cursor_sub == sub {
                     let cursor_col_in_row = cursor_vis - col_from;
                     cursor_screen = Some((
@@ -928,14 +922,15 @@ pub fn screen_to_pos(ed: &Editor, text_area: Rect, col: u16, row: u16) -> Option
             let last = line_count.saturating_sub(1);
             return Some(Position { line: last, col: ed.line_char_len(last) });
         }
-        let len = ed.line_display_width(line);
-        let sub_rows = visual_rows_for_len(len, content_w.max(1));
-        if remaining < sub_rows {
+        // Los mismos cortes que usó el dibujo: si acá se recalcularan de otra
+        // forma, un clic caería en un carácter distinto del que se ve.
+        let starts = ed.wrap_row_starts(line, content_w.max(1));
+        if remaining < starts.len() {
             let col_in_sub = if col >= content_x { (col - content_x) as usize } else { 0 };
-            let vis_col = remaining * content_w.max(1) + col_in_sub;
+            let vis_col = starts[remaining] + col_in_sub;
             return Some(Position { line, col: ed.col_from_display(line, vis_col) });
         }
-        remaining -= sub_rows;
+        remaining -= starts.len();
         line += 1;
     }
 }

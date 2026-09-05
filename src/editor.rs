@@ -556,9 +556,47 @@ impl Editor {
         len
     }
 
-    /// Ancho en columnas de pantalla de la línea entera, sin el terminador.
-    pub fn line_display_width(&self, line: usize) -> usize {
-        self.display_col(line, self.line_char_len(line))
+    /// Con ajuste de línea activado: en qué columna de pantalla arranca cada
+    /// fila visual de `line`. Siempre devuelve al menos una fila (la que
+    /// empieza en 0), hasta para una línea vacía.
+    ///
+    /// El corte no es una grilla fija cada `content_w` columnas: una fila
+    /// termina antes si el carácter siguiente no entra entero. Es la
+    /// diferencia entre partir un `日` al medio —y no poder dibujar ninguna
+    /// de sus dos mitades, que es lo que pasaba antes— y bajarlo completo a
+    /// la fila siguiente.
+    ///
+    /// Es la única fuente de verdad del corte: la dibuja `draw_text_wrapped`,
+    /// la cuenta el cálculo de scroll y la deshace `screen_to_pos` para los
+    /// clics. Mide con `char_display_width`, igual que todo lo demás.
+    pub fn wrap_row_starts(&self, line: usize, content_w: usize) -> Vec<usize> {
+        let mut starts = vec![0];
+        if content_w == 0 || line >= self.line_count() {
+            return starts;
+        }
+        let len = self.line_char_len(line);
+        let mut col = 0;
+        let mut row_start = 0;
+        for (i, c) in self.rope.line(line).chars().enumerate() {
+            if i >= len {
+                break;
+            }
+            let w = self.char_display_width(c, col);
+            // `col > row_start` evita quedarse en el molde con una ventana
+            // más angosta que un solo carácter: ahí no hay corte posible y
+            // el carácter desborda su fila, que es lo menos malo.
+            if col + w > row_start + content_w && col > row_start {
+                row_start = col;
+                starts.push(row_start);
+            }
+            col += w;
+        }
+        starts
+    }
+
+    /// En qué fila visual de `line` cae la columna de pantalla `vis`.
+    pub fn wrap_row_of(&self, starts: &[usize], vis: usize) -> usize {
+        starts.partition_point(|&s| s <= vis).saturating_sub(1)
     }
 
     pub fn pos_to_char_idx(&self, pos: Position) -> usize {
@@ -1580,9 +1618,9 @@ mod tests {
         assert_eq!(e.display_col(0, 1), 1);
         assert_eq!(e.display_col(0, 2), 4, "el tabulador llega a la columna 4");
         assert_eq!(e.display_col(0, 3), 5);
-        assert_eq!(e.line_display_width(0), 5);
+        assert_eq!(e.display_col(0, e.line_char_len(0)), 5);
         assert_eq!(e.display_col(1, 3), 6, "tres caracteres CJK son seis columnas");
-        assert_eq!(e.line_display_width(1), 7);
+        assert_eq!(e.display_col(1, e.line_char_len(1)), 7);
     }
 
     #[test]
@@ -1597,6 +1635,37 @@ mod tests {
         assert_eq!(e.col_from_display(1, 2), 1);
         assert_eq!(e.col_from_display(1, 3), 1);
         assert_eq!(e.col_from_display(1, 4), 2);
+    }
+
+    #[test]
+    fn el_ajuste_de_linea_no_parte_un_caracter_ancho() {
+        // Nueve CJK = 18 columnas. Con 5 de ancho entran dos por fila (4
+        // columnas) y el tercero no: la fila corta antes en vez de dibujar
+        // media letra.
+        let e = ed("日本語日本語日本語\n");
+        assert_eq!(e.wrap_row_starts(0, 5), vec![0, 4, 8, 12, 16]);
+    }
+
+    #[test]
+    fn con_ancho_justo_el_corte_cae_en_el_borde() {
+        let e = ed("日本語日本語\n");
+        assert_eq!(e.wrap_row_starts(0, 4), vec![0, 4, 8]);
+    }
+
+    #[test]
+    fn una_linea_vacia_ocupa_una_fila() {
+        let e = ed("\n\n");
+        assert_eq!(e.wrap_row_starts(0, 10), vec![0]);
+    }
+
+    #[test]
+    fn wrap_row_of_ubica_cada_columna_en_su_fila() {
+        let e = ed("日本語日本語日本語\n");
+        let starts = e.wrap_row_starts(0, 5);
+        assert_eq!(e.wrap_row_of(&starts, 0), 0);
+        assert_eq!(e.wrap_row_of(&starts, 3), 0);
+        assert_eq!(e.wrap_row_of(&starts, 4), 1);
+        assert_eq!(e.wrap_row_of(&starts, 17), 4);
     }
 
     #[test]
