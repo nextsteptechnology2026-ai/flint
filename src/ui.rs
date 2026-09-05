@@ -252,7 +252,10 @@ fn draw_completion_popup(
         .max()
         .unwrap_or(10)
         .clamp(12, text_area.width.saturating_sub(4) as usize) as u16
-        + 2;
+        // +2 los bordes del recuadro, +1 el espacio con el que arranca cada
+        // línea (`" {label}"`) — sin contarlo, la etiqueta más larga siempre
+        // perdía su último carácter.
+        + 3;
     let height = visible as u16 + 2;
     let x = text_area.x + 2;
     let y = (text_area.y + text_area.height.saturating_sub(height)).min(text_area.y + text_area.height.saturating_sub(1));
@@ -309,7 +312,9 @@ fn draw_palette_popup(f: &mut Frame, text_area: Rect, matches: &[String], select
         .max()
         .unwrap_or(20)
         .clamp(24, text_area.width.saturating_sub(4) as usize) as u16
-        + 2;
+        // Ver el comentario del popup de autocompletado: bordes + el espacio
+        // inicial de cada línea.
+        + 3;
     let height = visible as u16 + 2;
     let x = text_area.x + (text_area.width.saturating_sub(width)) / 2;
     let area = Rect {

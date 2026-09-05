@@ -163,7 +163,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Deshacer", Action::Undo),
         ("Rehacer", Action::Redo),
         ("Saltar al siguiente diagnóstico", Action::JumpDiagnostic),
-        ("Autocompletar (LSP)", Action::TriggerCompletion),
+        ("Autocompletar", Action::TriggerCompletion),
         ("Alternar capa modal (F2)", Action::ToggleModalLayer),
         (
             "Seleccionar siguiente aparición (multi-cursor)",
@@ -812,7 +812,9 @@ fn apply_completion(
         .collect();
 
     if items.is_empty() {
-        target.ed.status = "Sin sugerencias".to_string();
+        // El servidor no tenía nada que ofrecer acá: mejor las palabras del
+        // propio texto que un "sin sugerencias" y el popup sin abrir.
+        complete_from_buffer_in(&mut target.ed);
         return;
     }
     target.ed.mode = Mode::Completion {
@@ -1558,9 +1560,45 @@ fn normal_expand_selection(app: &mut App) {
     };
 }
 
+/// Autocompletado sin servidor de lenguaje: las palabras que ya están
+/// escritas en el propio buffer (como `Ctrl+N` en Vim). Es lo único que se
+/// puede saber de un `.txt`, y en prosa es justo lo útil — nombres propios,
+/// términos técnicos y palabras largas que ya usaste más arriba.
+fn complete_from_buffer(app: &mut App) {
+    complete_from_buffer_in(&mut app.buffers[app.active].ed);
+}
+
+/// El trabajo real, sobre un `Editor` puntual — así también lo puede usar la
+/// respuesta del LSP cuando el servidor no devolvió ninguna sugerencia, que
+/// es cuando más se agradece tener algo en vez de nada.
+fn complete_from_buffer_in(ed: &mut Editor) {
+    let (trigger, prefix) = ed.identifier_prefix_before_cursor();
+    let words = ed.words_starting_with(&prefix, 50);
+    if words.is_empty() {
+        ed.status = if prefix.is_empty() {
+            "No hay palabras en el texto para sugerir".to_string()
+        } else {
+            format!("Ninguna palabra del texto empieza con \"{prefix}\"")
+        };
+        return;
+    }
+    ed.status = format!("{} sugerencia(s) del texto", words.len());
+    ed.mode = Mode::Completion {
+        items: words
+            .into_iter()
+            .map(|label| editor::CompletionEntry { label, detail: None, insert_text: None })
+            .collect(),
+        selected: 0,
+        trigger,
+        prefix,
+    };
+}
+
 fn trigger_completion(app: &mut App) {
+    // Sin servidor no hay que quedarse sin autocompletado: se cae a las
+    // palabras del propio texto, que funcionan en cualquier archivo.
     if app.buffers[app.active].lsp_lang_id.is_none() {
-        app.buffers[app.active].ed.status = "Sin servidor de lenguaje para autocompletar".to_string();
+        complete_from_buffer(app);
         return;
     }
     let line = app.buffers[app.active].ed.cursor.line;
@@ -1573,7 +1611,7 @@ fn trigger_completion(app: &mut App) {
     let trigger = (trigger_pos.line, trigger_pos.col);
     let buffer = app.active;
     let (Some(client), Some(uri)) = (app.lsp.as_mut(), app.buffers[app.active].doc_uri.as_ref()) else {
-        app.buffers[app.active].ed.status = "Sin servidor de lenguaje para autocompletar".to_string();
+        complete_from_buffer(app);
         return;
     };
     match client.request_completion(uri, line, character, buffer, trigger, prefix) {

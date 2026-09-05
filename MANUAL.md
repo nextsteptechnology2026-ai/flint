@@ -48,7 +48,7 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+R` | Reemplazar (pide texto a buscar y con qué reemplazarlo) |
 | `Ctrl+Z` / `Ctrl+Y` | Deshacer / Rehacer |
 | `Ctrl+P` | Paleta de comandos |
-| `Ctrl+Espacio` | Autocompletar (si hay servidor LSP conectado) |
+| `Ctrl+Espacio` | Autocompletar: con servidor LSP conectado, sus sugerencias; si no hay (o el servidor no tiene nada que ofrecer), las palabras que ya escribiste en el archivo |
 | `Ctrl+G` | Saltar al siguiente diagnóstico |
 | `Ctrl+D` | Agregar un cursor en la siguiente aparición del texto seleccionado |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copiar / Cortar / Pegar — con el portapapeles del sistema |
@@ -234,6 +234,8 @@ Ver `plugins/ejemplo.lua` para tres comandos reales y completos (insertar la fec
 ## Autocompletado (LSP)
 
 `Ctrl+Espacio` pide sugerencias al servidor de lenguaje conectado (hoy, `rust-analyzer` para `.rs`).
+
+**Sin servidor de lenguaje** — un `.txt`, un `.md`, un `.py` — completa con las palabras que ya están escritas en el propio archivo, como `Ctrl+N` en Vim. No distingue mayúsculas (`SERV` encuentra `servidor`) y ordena por cercanía al cursor: lo que escribiste tres líneas más arriba aparece antes que algo del otro extremo del archivo, porque es mucho más probable que sea lo que querés repetir. También es lo que se muestra cuando hay servidor pero no devolvió ninguna sugerencia para esa posición: mejor algo que un "sin sugerencias".
 
 - El popup arranca ya filtrado por el identificador tipeado antes de pedirlo — `s.pu` + `Ctrl+Espacio` filtra por "pu" desde el primer instante, no muestra la lista entera sin filtrar.
 - Se puede seguir escribiendo con el popup abierto: cada letra se inserta en el documento *y* refina el filtro (mismo puntaje difuso que la paleta de comandos), `Backspace` deshace un carácter del filtro.

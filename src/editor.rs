@@ -1,5 +1,7 @@
 use regex::Regex;
 use ropey::Rope;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -404,6 +406,55 @@ impl Editor {
     /// por lo que se escribió antes de pedirlo (`s.pu` + `Ctrl+Espacio`
     /// arranca filtrado por "pu", no vacío) y para saber desde dónde
     /// reemplazar al aceptar una sugerencia.
+    /// Palabras que ya están escritas en este buffer y empiezan con `prefix`
+    /// (sin distinguir mayúsculas), ordenadas por cercanía a la línea del
+    /// cursor y, a igual distancia, alfabéticamente.
+    ///
+    /// Es el autocompletado que se puede dar en un archivo sin servidor de
+    /// lenguaje: no hay más información disponible que el texto mismo. La
+    /// cercanía manda porque lo que escribiste hace tres líneas es mucho más
+    /// probable que sea lo que querés repetir que algo del otro extremo del
+    /// archivo.
+    ///
+    /// Recorre el buffer entero, pero solo cuando se pide de verdad
+    /// (`Ctrl+Espacio`), no en cada tecla; y va línea por línea sobre el rope
+    /// en vez de volcarlo a un `String`, igual que la búsqueda literal.
+    pub fn words_starting_with(&self, prefix: &str, limit: usize) -> Vec<String> {
+        let needle = prefix.to_lowercase();
+        let prefix_len = prefix.chars().count();
+        // palabra → distancia mínima, en líneas, hasta el cursor.
+        let mut best: HashMap<String, usize> = HashMap::new();
+        for (i, line) in self.rope.lines().enumerate() {
+            let dist = i.abs_diff(self.cursor.line);
+            let text: Cow<str> = match line.as_str() {
+                Some(s) => Cow::Borrowed(s),
+                None => Cow::Owned(line.to_string()),
+            };
+            for word in text.split_word_bounds() {
+                // `split_word_bounds` devuelve también espacios y signos;
+                // acá solo interesa lo que puede ser una palabra o un
+                // identificador.
+                if !word.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                // Una candidata del mismo largo que lo tipeado es lo tipeado
+                // mismo (en alguna combinación de mayúsculas): no aporta.
+                if word.chars().count() <= prefix_len {
+                    continue;
+                }
+                if !word.to_lowercase().starts_with(&needle) {
+                    continue;
+                }
+                best.entry(word.to_string())
+                    .and_modify(|d| *d = (*d).min(dist))
+                    .or_insert(dist);
+            }
+        }
+        let mut found: Vec<(usize, String)> = best.into_iter().map(|(w, d)| (d, w)).collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        found.into_iter().take(limit).map(|(_, w)| w).collect()
+    }
+
     pub fn identifier_prefix_before_cursor(&self) -> (Position, String) {
         let line = self.cursor.line;
         let col = self.cursor.col;
@@ -1546,6 +1597,35 @@ mod tests {
         assert_eq!(e.col_from_display(1, 2), 1);
         assert_eq!(e.col_from_display(1, 3), 1);
         assert_eq!(e.col_from_display(1, 4), 2);
+    }
+
+    #[test]
+    fn completa_con_palabras_del_propio_texto() {
+        let mut e = ed("sincronización incremental\notra línea\n");
+        e.cursor = Position { line: 1, col: 0 };
+        assert_eq!(e.words_starting_with("sincr", 10), vec!["sincronización"]);
+    }
+
+    #[test]
+    fn completar_del_texto_ignora_mayusculas_y_lo_ya_escrito() {
+        let e = ed("Servidor y servidor\n");
+        let encontradas = e.words_starting_with("SERV", 10);
+        assert!(encontradas.contains(&"Servidor".to_string()));
+        assert!(encontradas.contains(&"servidor".to_string()));
+        // Una candidata del mismo largo que lo tipeado es lo tipeado mismo:
+        // sugerirla no aportaría nada.
+        assert!(e.words_starting_with("servidor", 10).is_empty());
+    }
+
+    #[test]
+    fn las_sugerencias_del_texto_vienen_por_cercania_al_cursor() {
+        let mut e = ed("compilacion\n\n\n\ncompilador\ncompilar\n");
+        e.cursor = Position { line: 5, col: 0 };
+        assert_eq!(
+            e.words_starting_with("compil", 10),
+            vec!["compilar", "compilador", "compilacion"],
+            "lo más cerca del cursor es lo más probable que quieras repetir"
+        );
     }
 
     #[test]

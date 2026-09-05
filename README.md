@@ -80,6 +80,7 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 - **Capa modal opcional** (`F2`): modelo selección→acción estilo Kakoune/Helix, con **selección estructural** sobre el árbol de tree-sitter (`n` expande al nodo que contiene la selección, y otra vez sube al padre).
 - **Multi-cursor de verdad**: `Ctrl+D` y `Alt+clic`; escribir, borrar y deshacer actúan sobre todos los cursores a la vez, de forma atómica.
 - **Resaltado y LSP reales**: tree-sitter para Rust, Python, JSON y TOML; cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) conectado hoy a `rust-analyzer` — diagnósticos subrayados en el rango exacto y autocompletado que filtra por lo que ya escribiste. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
+- **Autocompletado en cualquier archivo**: con servidor LSP, sus sugerencias; sin él, las palabras que ya escribiste en el archivo (como `Ctrl+N` en Vim), sin distinguir mayúsculas y ordenadas por cercanía al cursor.
 - **Tuyo**: temas en `~/.config/flint/theme.toml` que se recargan solos al guardarlos, perfiles de teclado Flint/Vim/Emacs sobre una tabla tecla→acción, y plugins en Lua que registran comandos en la paleta (se cargan desde `./plugins`, `~/.config/flint/plugins/` y `/usr/share/flint/plugins/`).
 - **Anchos de pantalla reales**: tabuladores, CJK, emoji y acentos combinantes se miden en columnas de terminal, no en caracteres — el cursor cae donde está el texto.
 
