@@ -1,0 +1,48 @@
+# Corre lo mismo que se corre a mano antes de cada commit: compilar, los
+# tests, y clippy sin warnings. Si esto pasa, el árbol está en el estado en
+# el que se supone que está.
+#
+# A propósito usa solo `actions/checkout` (oficial de GitHub) y el Rust que
+# ya viene instalado en el runner, en vez de acciones de terceros para el
+# toolchain y el caché: son cómodas y muy usadas, pero son código ajeno
+# corriendo con acceso al repo, y este proyecto no compila tan lento como
+# para necesitarlas.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Un warning de clippy no debería pasar desapercibido en un log largo.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  verificar:
+    name: Compilar, tests y clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versión del toolchain
+        run: |
+          rustup component add clippy
+          rustc --version
+          cargo --version
+
+      # mlua compila Lua 5.4 desde fuente (feature `vendored`) y los crates de
+      # tree-sitter traen C, así que hace falta un compilador de C — viene en
+      # la imagen de ubuntu-latest, esto solo lo deja registrado en el log.
+      - name: Compilador de C disponible
+        run: cc --version
+
+      - name: Compilar
+        run: cargo build --all-targets --locked
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked

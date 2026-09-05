@@ -33,6 +33,9 @@ Chicos:
    que la pantalla entera (rarísimo): se muestra desde su principio.
 8. La auto-indentación copia el espacio en blanco de la línea anterior y
    nada más — no entiende llaves ni paréntesis, que depende del lenguaje.
+9. Distribución más allá del .deb: binarios adjuntos a una release de GitHub
+   y una fórmula de Homebrew. Estaban bloqueados por no haber repositorio
+   público; desde el 2026-09-05 lo hay, así que dejaron de estarlo.
 
 Hecho desde la versión anterior de este archivo (no volver a anotarlo):
 - Empaquetado .deb (packaging/build-deb.sh).
@@ -46,3 +49,13 @@ Hecho desde la versión anterior de este archivo (no volver a anotarlo):
   pantalla reales (cursor, scroll, wrap y clics incluidos).
 - Tab indenta el bloque seleccionado en vez de borrarlo; Shift+Tab
   des-indenta.
+- Los plugins se cargan desde ./plugins, ~/.config/flint/plugins/ y
+  /usr/share/flint/plugins/ — antes solo desde el primero, así que instalado
+  por .deb no cargaba ninguno.
+- CI en GitHub Actions (.github/workflows/ci.yml): compila, corre los tests y
+  clippy sin warnings en cada push y cada pull request.
+
+Nota sobre el CI: no corre `cargo fmt --check`. El código tiene un estilo
+propio deliberado y nadie verificó todavía si pasa rustfmt tal cual; meterlo
+sin comprobarlo pondría el CI en rojo desde el primer push y forzaría un
+reformateo masivo. Queda como decisión pendiente, no como olvido.
