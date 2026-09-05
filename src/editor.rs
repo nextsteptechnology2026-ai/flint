@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthChar;
 
 /// Ediciones del mismo tipo hechas dentro de esta ventana de tiempo se agrupan
 /// en un solo paso de deshacer (igual que "escribir una palabra" cuenta como uno).
@@ -16,6 +17,26 @@ const MAX_OCCURRENCES: usize = 500;
 /// Ancho por defecto de una parada de tabulación, en columnas de pantalla —
 /// la convención de la mayoría de los editores de terminal.
 pub const DEFAULT_TAB_WIDTH: usize = 4;
+
+/// Cuántas columnas de pantalla ocupa `c` empezando a dibujarse en la columna
+/// `at`. Tres casos:
+///
+/// - el tabulador se estira hasta la próxima parada de tabulación, así que su
+///   ancho depende de dónde empieza (de 1 a `tab_width`);
+/// - los caracteres anchos (CJK, emoji) ocupan dos columnas;
+/// - las marcas combinantes (un acento que se pinta sobre la letra anterior)
+///   ocupan cero, igual que los caracteres de control.
+///
+/// El ancho lo decide `unicode-width`, la misma tabla que usa ratatui para
+/// medir lo que dibuja: usar otra regla es justamente lo que desalinea el
+/// cursor del texto.
+pub fn char_display_width(c: char, at: usize, tab_width: usize) -> usize {
+    if c == '\t' {
+        tab_width - (at % tab_width.max(1))
+    } else {
+        UnicodeWidthChar::width(c).unwrap_or(0)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EditKind {
@@ -436,16 +457,10 @@ impl Editor {
         }
     }
 
-    /// Cuántas columnas de pantalla ocupa `c` empezando a dibujarse en la
-    /// columna `at`. Solo el tabulador depende de dónde está: se estira hasta
-    /// la próxima parada de tabulación, así que su ancho va de 1 a
-    /// `tab_width`. El resto de los caracteres ocupan una columna.
+    /// Igual que la función libre `char_display_width`, con el `tab_width`
+    /// de este buffer ya puesto.
     pub fn char_display_width(&self, c: char, at: usize) -> usize {
-        if c == '\t' {
-            self.tab_width - (at % self.tab_width)
-        } else {
-            1
-        }
+        char_display_width(c, at, self.tab_width)
     }
 
     /// Columna de pantalla donde empieza a dibujarse el carácter `col` de

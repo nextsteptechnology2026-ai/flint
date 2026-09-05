@@ -194,6 +194,8 @@ tab_width = 4              # columnas que ocupa un tabulador al dibujarse (1 a 1
 
 `tab_width` es solo presentación: el `\t` sigue siendo un único carácter en el archivo, lo que cambia es hasta dónde se estira en pantalla (cada tabulador llega hasta la próxima parada de tabulación, así que su ancho depende de en qué columna empieza). Se aplica en caliente igual que los colores, y a todos los buffers abiertos.
 
+En la misma línea, los caracteres anchos (CJK, emoji) ocupan dos columnas y las marcas combinantes (un acento que se pinta sobre la letra anterior) ninguna. No hay nada que configurar: el cursor, el scroll, el ajuste de línea y los clics del mouse ya cuentan columnas de pantalla, no caracteres.
+
 `transparent_bars` solo afecta a las barras — el área de texto nunca pintó su propio fondo, así que si tu terminal tiene transparencia/blur configurados, ya se ve ahí de por sí.
 
 ## Plugins en Lua

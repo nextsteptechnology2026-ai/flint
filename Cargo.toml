@@ -21,3 +21,7 @@ tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-toml-ng = "0.7.0"
 unicode-segmentation = "1.12.0"
+# Ya estaba en el árbol (ratatui la usa para medir lo que dibuja); tenerla
+# como dependencia directa es lo que garantiza que el cursor y el texto se
+# midan con la misma regla que usa el renderer.
+unicode-width = "0.2.2"

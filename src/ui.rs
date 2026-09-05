@@ -460,10 +460,10 @@ fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
             })
             .collect();
 
-        let cells = expand_cells(&chars, ed.tab_width);
+        let line = LineCells::new(&chars, ed.tab_width);
         let mut spans = vec![diag_span, gutter_span];
         spans.extend(build_line_spans(
-            &cells,
+            &line,
             ed.col_offset,
             content_w,
             highlights,
@@ -596,8 +596,8 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
             })
             .collect();
 
-        let cells = expand_cells(&chars, ed.tab_width);
-        let sub_rows = visual_rows_for_len(cells.len(), content_w.max(1));
+        let line = LineCells::new(&chars, ed.tab_width);
+        let sub_rows = visual_rows_for_len(line.len(), content_w.max(1));
         for sub in 0..sub_rows {
             if row >= visible_rows {
                 break;
@@ -628,7 +628,7 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
 
             let mut spans = vec![diag_span, gutter_span];
             spans.extend(build_line_spans(
-                &cells,
+                &line,
                 col_from,
                 content_w,
                 highlights,
@@ -701,38 +701,119 @@ fn diagnostic_cols_on_line(
     Some((s, e))
 }
 
-/// Expande una línea a las celdas que de verdad se dibujan: una por columna
-/// de pantalla, con el índice del carácter del que salió. Un `\t` produce
-/// varias celdas en blanco (hasta la próxima parada de tabulación) que
-/// apuntan todas al mismo carácter; el resto produce una celda cada uno.
-/// Con esto el dibujo y los rangos de resaltado se pueden mezclar sin que
-/// nadie tenga que acordarse de la diferencia entre carácter y columna.
-fn expand_cells(chars: &[char], tab_width: usize) -> Vec<(char, usize)> {
-    let mut cells: Vec<(char, usize)> = Vec::with_capacity(chars.len());
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '\t' {
-            let w = tab_width - (cells.len() % tab_width.max(1));
-            cells.resize(cells.len() + w.max(1), (' ', i));
-        } else {
-            cells.push((c, i));
-        }
-    }
-    cells
+/// Qué se dibuja en una columna de la pantalla.
+enum CellKind {
+    /// Los caracteres `chars[inicio..fin]`: normalmente uno solo, y más de
+    /// uno cuando le siguen marcas combinantes (un acento que se pinta sobre
+    /// la letra sin ocupar columna propia) — van pegadas a su letra para que
+    /// no se pierdan por el camino.
+    Text(usize, usize),
+    /// Un espacio propio: cada una de las columnas en que se expande un `\t`.
+    Blank,
+    /// La segunda mitad de un carácter ancho (CJK, emoji). La columna está
+    /// ocupada por el glifo de la celda anterior, así que acá no se dibuja
+    /// nada: la celda existe solo para que las cuentas de columnas cierren.
+    WideTail,
 }
 
-/// Traduce un rango de caracteres `[s,e)` (como vienen el resaltado, las
-/// selecciones y los diagnósticos) al rango de celdas de pantalla que le
-/// corresponde. Los índices de carácter de `cells` no decrecen nunca, así
-/// que alcanza con una búsqueda binaria en cada extremo.
-fn cell_range(cells: &[(char, usize)], s: usize, e: usize) -> (usize, usize) {
-    (
-        cells.partition_point(|&(_, ci)| ci < s),
-        cells.partition_point(|&(_, ci)| ci < e),
-    )
+/// Una columna de pantalla y el índice del carácter del que salió (`src`),
+/// que es lo que permite casar los rangos de resaltado, selección y
+/// diagnósticos — que vienen en caracteres — con lo que de verdad se dibuja.
+struct Cell {
+    kind: CellKind,
+    src: usize,
+}
+
+/// Una línea ya expandida a las columnas que de verdad se dibujan. Es el
+/// puente entre las dos unidades que conviven en el editor: el buffer cuenta
+/// caracteres (un `\t` es uno, un `日` es uno) y la terminal cuenta columnas
+/// (ese `\t` puede ocupar cuatro, ese `日` ocupa dos). Con esto, el dibujo y
+/// los rangos de resaltado se pueden mezclar sin que nadie tenga que
+/// acordarse de la diferencia.
+struct LineCells<'a> {
+    cells: Vec<Cell>,
+    chars: &'a [char],
+    tab_width: usize,
+}
+
+impl<'a> LineCells<'a> {
+    fn new(chars: &'a [char], tab_width: usize) -> Self {
+        let mut cells: Vec<Cell> = Vec::with_capacity(chars.len());
+        for (i, &c) in chars.iter().enumerate() {
+            let width = crate::editor::char_display_width(c, cells.len(), tab_width);
+            if width == 0 {
+                // Marca combinante: se estira el texto de la celda anterior
+                // para que la incluya. Si la línea arranca con una (no
+                // debería, pero pasa con archivos rotos), se le da una
+                // columna propia en vez de tirarla — mejor que se vea rara a
+                // que desaparezca.
+                match cells.last_mut() {
+                    Some(Cell { kind: CellKind::Text(_, end), .. }) => *end = i + 1,
+                    _ => cells.push(Cell { kind: CellKind::Text(i, i + 1), src: i }),
+                }
+                continue;
+            }
+            let head = if c == '\t' { CellKind::Blank } else { CellKind::Text(i, i + 1) };
+            cells.push(Cell { kind: head, src: i });
+            for _ in 1..width {
+                let kind = if c == '\t' { CellKind::Blank } else { CellKind::WideTail };
+                cells.push(Cell { kind, src: i });
+            }
+        }
+        LineCells { cells, chars, tab_width }
+    }
+
+    /// Cuántas columnas de pantalla ocupa la línea entera.
+    fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// El texto de un tramo de columnas, listo para meter en un `Span`.
+    ///
+    /// Un carácter ancho cortado por el borde de la ventana (scroll
+    /// horizontal o ajuste de línea) se dibuja como un espacio: medio glifo
+    /// no se puede dibujar, y ocupar su columna es lo que mantiene alineado
+    /// todo lo que sigue. Lo mismo del otro lado, cuando el tramo arranca en
+    /// la segunda mitad de un carácter que quedó afuera.
+    fn text(&self, from: usize, to: usize) -> String {
+        let run = &self.cells[from..to];
+        let mut text = String::with_capacity(run.len());
+        for (k, cell) in run.iter().enumerate() {
+            match cell.kind {
+                CellKind::Blank => text.push(' '),
+                CellKind::Text(s, e) => {
+                    let width = crate::editor::char_display_width(self.chars[s], 0, self.tab_width);
+                    if k + width <= run.len() {
+                        text.extend(&self.chars[s..e]);
+                    } else {
+                        text.push(' ');
+                    }
+                }
+                // Si no es la primera celda del tramo, su glifo ya se dibujó.
+                CellKind::WideTail => {
+                    if k == 0 {
+                        text.push(' ');
+                    }
+                }
+            }
+        }
+        text
+    }
+
+    /// Traduce un rango de caracteres `[s,e)` (como vienen el resaltado, las
+    /// selecciones y los diagnósticos) al rango de columnas que le
+    /// corresponde. Los `src` no decrecen nunca, así que alcanza con una
+    /// búsqueda binaria en cada extremo.
+    fn cell_range(&self, s: usize, e: usize) -> (usize, usize) {
+        (
+            self.cells.partition_point(|c| c.src < s),
+            self.cells.partition_point(|c| c.src < e),
+        )
+    }
 }
 
 fn build_line_spans(
-    cells: &[(char, usize)],
+    line: &LineCells,
     col_offset: usize,
     content_w: usize,
     highlights: &[(usize, usize, HighlightKind)],
@@ -740,7 +821,7 @@ fn build_line_spans(
     diagnostics: &[(usize, usize, ratatui::style::Color)],
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let total = cells.len();
+    let total = line.len();
     let start = col_offset.min(total);
     let end = (col_offset + content_w).min(total);
     if start >= end {
@@ -750,7 +831,7 @@ fn build_line_spans(
     let mut styles: Vec<Style> = vec![Style::default().fg(theme.text_fg); width];
 
     for &(hs, he, kind) in highlights {
-        let (hs, he) = cell_range(cells, hs, he);
+        let (hs, he) = line.cell_range(hs, he);
         let s = hs.max(start);
         let e = he.min(end);
         if s < e {
@@ -762,7 +843,7 @@ fn build_line_spans(
     }
 
     for &(ss, se, style) in selections {
-        let (ss, se) = cell_range(cells, ss, se);
+        let (ss, se) = line.cell_range(ss, se);
         let s = ss.max(start);
         let e = se.min(end);
         if s < e {
@@ -776,7 +857,7 @@ fn build_line_spans(
     // que ya tenía la celda (sintaxis o selección) — no reemplaza el estilo,
     // solo le agrega el modificador y el color de subrayado.
     for &(ds, de, color) in diagnostics {
-        let (ds, de) = cell_range(cells, ds, de);
+        let (ds, de) = line.cell_range(ds, de);
         let s = ds.max(start);
         let e = de.min(end);
         if s < e {
@@ -794,7 +875,7 @@ fn build_line_spans(
         while j < width && styles[j] == style {
             j += 1;
         }
-        let text: String = cells[start + i..start + j].iter().map(|&(c, _)| c).collect();
+        let text = line.text(start + i, start + j);
         spans.push(Span::styled(text, style));
         i = j;
     }
