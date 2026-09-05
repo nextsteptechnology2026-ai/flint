@@ -200,7 +200,17 @@ En la misma línea, los caracteres anchos (CJK, emoji) ocupan dos columnas y las
 
 ## Plugins en Lua
 
-Flint carga cualquier `plugins/*.lua` relativo al directorio desde donde se arranca, al iniciar. Cada comando que un script registre aparece en la paleta de comandos.
+Al iniciar, Flint carga todos los `*.lua` que encuentre en estos tres lugares, de mayor a menor precedencia:
+
+| Directorio | Para qué |
+|---|---|
+| `./plugins` | Relativo a donde arrancás Flint — para desarrollar dentro del repo |
+| `~/.config/flint/plugins/` | Los tuyos, junto al `theme.toml` |
+| `/usr/share/flint/plugins/` | Los que instala el paquete `.deb` |
+
+Si el mismo nombre de archivo aparece en más de uno, se carga solo el del directorio de mayor precedencia — así tu `ejemplo.lua` reemplaza al del sistema en vez de que corran los dos y el comando aparezca duplicado en la paleta.
+
+Cada comando que un script registre aparece en la paleta de comandos.
 
 ```lua
 flint.register_command("id-unico", "Etiqueta que se ve en la paleta", function()

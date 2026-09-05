@@ -1,5 +1,6 @@
 use std::cell::RefCell;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use mlua::{Function, Lua, RegistryKey};
@@ -29,11 +30,31 @@ pub struct PluginBridge {
     ctx_line_count: Rc<RefCell<usize>>,
 }
 
+/// Dónde busca Flint los plugins, de mayor a menor precedencia:
+///
+/// 1. `./plugins` — relativo a donde se arranca; es lo que hace falta para
+///    desarrollar dentro del repo, y era el único lugar que se miraba antes.
+/// 2. `~/.config/flint/plugins` — los tuyos, junto al `theme.toml` que ya
+///    vivía ahí.
+/// 3. `/usr/share/flint/plugins` — los que instala el paquete `.deb`.
+///
+/// Mirar solo el primero dejaba los plugins de ejemplo del `.deb` en un
+/// directorio que nadie leía: instalado, Flint nunca cargaba ninguno salvo
+/// que lo arrancaras parado justo en un directorio con `./plugins`.
+pub fn default_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("plugins")];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".config/flint/plugins"));
+    }
+    dirs.push(PathBuf::from("/usr/share/flint/plugins"));
+    dirs
+}
+
 impl PluginBridge {
-    /// Carga todos los `*.lua` de `dir` (si existe). Devuelve el puente, la
-    /// lista de comandos que los scripts registraron, y cualquier error de
-    /// carga (un script con errores no aborta a los demás).
-    pub fn load(dir: &Path) -> (PluginBridge, Vec<PluginCommand>, Vec<String>) {
+    /// Carga todos los `*.lua` de `dirs` (los que existan). Devuelve el
+    /// puente, la lista de comandos que los scripts registraron, y cualquier
+    /// error de carga (un script con errores no aborta a los demás).
+    pub fn load(dirs: &[PathBuf]) -> (PluginBridge, Vec<PluginCommand>, Vec<String>) {
         let lua = Lua::new();
         let pending_status = Rc::new(RefCell::new(None));
         let pending_inserts = Rc::new(RefCell::new(Vec::new()));
@@ -54,7 +75,15 @@ impl PluginBridge {
             errors.push(format!("No se pudo preparar la API de plugins: {e}"));
         }
 
-        if dir.is_dir() {
+        // Un mismo nombre de archivo en dos directorios se carga una sola
+        // vez, la del directorio de mayor precedencia: así un plugin propio
+        // reemplaza al del sistema en vez de que corran los dos y la paleta
+        // termine con el comando duplicado.
+        let mut seen: Vec<OsString> = Vec::new();
+        for dir in dirs {
+            if !dir.is_dir() {
+                continue;
+            }
             match std::fs::read_dir(dir) {
                 Ok(entries) => {
                     let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
@@ -63,6 +92,13 @@ impl PluginBridge {
                         if path.extension().and_then(|e| e.to_str()) != Some("lua") {
                             continue;
                         }
+                        let Some(file_name) = path.file_name().map(OsString::from) else {
+                            continue;
+                        };
+                        if seen.contains(&file_name) {
+                            continue;
+                        }
+                        seen.push(file_name);
                         match std::fs::read_to_string(&path) {
                             Ok(src) => {
                                 let name = path.display().to_string();

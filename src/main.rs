@@ -304,8 +304,8 @@ fn main() -> io::Result<()> {
         buffer.ed.status = format!("{} — resaltado: {}", buffer.ed.status, l.label());
     }
 
-    let plugins_dir = PathBuf::from("plugins");
-    let (plugin_host, plugin_commands, plugin_errors) = plugins::PluginBridge::load(&plugins_dir);
+    let plugins_dirs = plugins::default_dirs();
+    let (plugin_host, plugin_commands, plugin_errors) = plugins::PluginBridge::load(&plugins_dirs);
     let mut palette_entries = builtin_palette_entries();
     for (i, cmd) in plugin_commands.iter().enumerate() {
         palette_entries.push(PaletteEntry {
