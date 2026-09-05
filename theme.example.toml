@@ -1,0 +1,45 @@
+# Tema de ejemplo para Flint — una paleta fría (azul/violeta) bien distinta
+# de la ámbar por defecto, para que el cambio se note de un vistazo.
+#
+# Para usarlo:
+#   cargo run -- --theme theme.example.toml archivo.txt
+# o copiarlo a la ubicación por defecto para que se cargue siempre:
+#   mkdir -p ~/.config/flint && cp theme.example.toml ~/.config/flint/theme.toml
+#
+# Cualquier color que falte o esté mal escrito se queda en su valor por
+# defecto — no hace falta completar el archivo entero.
+
+[colors]
+bar_bg = "#161a2e"
+bar_fg = "#7fb0ff"
+text_fg = "#dce0f0"
+dim = "#6a7090"
+selection_bg = "#2a3560"
+selection_fg = "#f0f2ff"
+secondary_bg = "#c792ea"
+secondary_fg = "#161a2e"
+popup_bg = "#1c2140"
+error = "#ff6b81"
+warning = "#f2c14e"
+hint = "#7fb0ff"
+
+[syntax]
+keyword = "#c792ea"
+function = "#82aaff"
+type = "#ffcb6b"
+string = "#c3e88d"
+comment = "#6a7090"
+number = "#f78c6c"
+constant = "#f78c6c"
+operator = "#89ddff"
+punctuation = "#89ddff"
+property = "#82aaff"
+attribute = "#ffcb6b"
+
+[appearance]
+transparent_bars = false
+cursor_style = "bar"
+cursor_blink = true
+# Columnas que ocupa un tabulador al dibujarse (1 a 16). No cambia el
+# archivo: el `\t` sigue siendo un solo carácter, solo se ve más ancho.
+tab_width = 4

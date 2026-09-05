@@ -1,0 +1,23 @@
+[package]
+name = "flint"
+version = "0.1.1"
+edition = "2024"
+description = "Editor de terminal con capa modal opcional, resaltado de sintaxis y LSP via tree-sitter, multi-cursor, temas configurables y plugins en Lua"
+
+[dependencies]
+arboard = { version = "3.6.1", default-features = false }
+crossterm = "0.29.0"
+mlua = { version = "0.12.1", features = ["lua54", "vendored"] }
+ratatui = "0.30.2"
+regex = "1.11.3"
+ropey = "1.6.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.4"
+tree-sitter = "0.27.0"
+tree-sitter-highlight = "0.27.0"
+tree-sitter-json = "0.24.8"
+tree-sitter-python = "0.25.0"
+tree-sitter-rust = "0.24.2"
+tree-sitter-toml-ng = "0.7.0"
+unicode-segmentation = "1.12.0"

@@ -1,0 +1,19 @@
+Con todo lo hecho hasta ahora (multi-buffer, portapapeles del sistema, CRLF, re-detección en "Guardar como", búsqueda/reemplazo/resaltado más eficientes), esto es lo que queda:
+
+Medianos:
+1. LSP solo para Rust — Python/JSON/TOML tienen resaltado de sintaxis pero no diagnósticos ni autocompletado reales (harían falta pylsp/pyright, etc.).
+2. Cero tests automatizados — todo se verificó a mano con tmux; no hay red de seguridad ante un refactor futuro.
+3. Perfiles de teclado fijos — solo Flint/Vim/Emacs hardcodeados en el código; no se puede definir un perfil propio en un archivo.
+4. Plugins Lua limitados — pueden registrar comandos e insertar texto, pero no pueden bindear teclas propias, leer/mover la selección, ni tocar el portapapeles.
+5. Sin empaquetado/distribución — solo se instala con cargo install --path .; no hay .deb, Homebrew, ni binarios prearmados.
+
+Chicos:
+6. Sincronización LSP no incremental (manda el documento completo en cada cambio, no un diff).
+7. El autocompletado inserta la sugerencia completa sin filtrar por lo ya escrito, y nol servidor.
+8. Los diagnósticoa, no por el rangoexacto de columnas que reporta el servidor.
+9. select_word (w)in reglas Unicode
+finas de límites d
+10. El tema no disminal ni se recarga
+en caliente (hay q
+11. Un plugin no p de colores desintaxis para un l12. La barra de peouse (soloCtrl+PageUp/Down/paleta).                                        13. El resaltado dpor recálculo (semitigó con debounc real de tree-sitter es una reescriturarromper el árbol si
+se hace mal).
