@@ -43,7 +43,7 @@ cat > "$FAKE_DEBIAN/control" <<'EOF'
 Source: flint
 Section: editors
 Priority: optional
-Maintainer: Flint <nextsteptechnology2026@gmail.com>
+Maintainer: Next Step Technology SpA <nextsteptechnology2026@gmail.com>
 
 Package: flint
 Architecture: any
@@ -66,7 +66,7 @@ Section: editors
 Priority: optional
 Architecture: $ARCH
 Depends: $DEPENDS
-Maintainer: Flint <nextsteptechnology2026@gmail.com>
+Maintainer: Next Step Technology SpA <nextsteptechnology2026@gmail.com>
 Description: Editor de terminal con capa modal opcional, LSP y multi-cursor
  Flint arranca en modo directo (paridad con nano) y suma, encima, una capa
  modal opcional estilo Kakoune/Helix (F2), resaltado de sintaxis y LSP real

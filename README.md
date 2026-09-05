@@ -1,20 +1,100 @@
-# Flint — prototipo Fase 0 + Fase 1 + Fase 2 + Fase 3
+# Flint
 
-Prototipo del editor de terminal propuesto en el informe de investigación. Cubre la **Fase 0** (paridad con `nano` sobre un buffer en rope, selección con teclado y mouse, deshacer/rehacer), la **Fase 1** (resaltado de sintaxis real vía tree-sitter, y un cliente LSP real — probado end-to-end con `rust-analyzer` — para diagnósticos y autocompletado), la **Fase 2** (una capa modal opcional, activable con `F2`, con selección→acción estilo Kakoune/Helix y selección estructural sobre el árbol de tree-sitter), **multi-cursor** (selecciones múltiples de verdad, con `Ctrl+D` y `Alt+clic`, editando y deshaciendo todas a la vez) y la **Fase 3** (paleta de comandos con búsqueda difusa, perfiles de teclado remapeables — Vim/Emacs/Flint — sobre un mecanismo genérico de acciones, y plugins reales en Lua).
+Editor de terminal en Rust. Abre como `nano` —las teclas hacen lo que dicen— y suma, encima, una capa modal opcional a un `F2` de distancia. Resaltado de sintaxis y LSP reales vía tree-sitter, multi-cursor, temas en TOML con recarga en caliente y plugins en Lua.
 
-> Para la referencia de uso — todos los atajos, comandos de la paleta, formato del `theme.toml` y la API de plugins — ver **[MANUAL.md](MANUAL.md)**. Este archivo cuenta la historia de cómo se construyó cada parte y qué se probó.
-
-## Compilar y ejecutar
-
-```sh
-cargo run -- archivo.txt                    # abre (o crea) archivo.txt
-cargo run                                   # abre un buffer sin nombre
-cargo run -- --profile vim archivo.rs       # arranca con el perfil de teclado Vim
-cargo run -- --profile emacs archivo.rs     # o Emacs
-cargo run -- --theme theme.example.toml archivo.txt   # con un tema de colores propio
+```
+ Flint   demo.rs
+   1 use std::collections::HashMap;
+   2
+   3 /// Cuenta cuántas veces aparece cada palabra.
+   4 fn contar(texto: &str) -> HashMap<&str, usize> {
+   5     let mut conteo = HashMap::new();
+   6     for palabra in texto.split_whitespace() {
+   7         *conteo.entry(palabra).or_insert(0) += 1;
+   8     }
+   9     conteo
+  10 }
+  11
+  12 fn main() {
+  13     let conteo = contar("uno dos dos tres tres tres");
+  14     println!("{conteo:?}");
+  15 }
+  16
+     ~
+ Iniciando rust-analyzer… · rust-analyzer listo (sync incremental)
+ ^S Guardar  ^Q Salir  ^F Buscar  ^R Reemplazar  ^Z Deshacer  ^Y Rehacer
+ F2 Capa modal  ^P Paleta  ^Espacio Autocompletar  ^G Diagnóstico  ^D +cur
 ```
 
-Los plugins se cargan desde `plugins/*.lua`, relativo al directorio desde donde se arranca Flint (ver `plugins/ejemplo.lua`).
+## Por qué
+
+Los editores de terminal suelen obligarte a elegir de entrada: la simplicidad de `nano`, y te quedás sin herramientas; o el modelo modal de Vim/Helix, y pagás la curva antes de escribir la primera letra.
+
+Flint no te hace elegir. Arranca en modo directo, sin nada que aprender, y todo lo demás —capa modal, multi-cursor, LSP, plugins— está ahí cuando lo quieras, no antes.
+
+## Instalación
+
+**Paquete `.deb`** (Debian, Ubuntu, Kali y derivados). La máquina donde se instala **no** necesita tener Rust:
+
+```sh
+bash packaging/build-deb.sh                       # compila y arma el paquete
+sudo apt install ./target/deb/flint_*_amd64.deb
+```
+
+**Desde el código** (necesita Rust ≥ 1.85, por la edición 2024):
+
+```sh
+cargo install --path .        # instala en ~/.cargo/bin
+cargo run -- archivo.txt      # o simplemente probarlo sin instalar
+```
+
+## Uso
+
+```sh
+flint archivo.txt                          # abre (o crea) un archivo
+flint                                      # buffer sin nombre
+flint --profile vim archivo.rs             # perfil de teclado Vim (o emacs, flint)
+flint --theme theme.example.toml notas.md  # con un tema propio
+```
+
+Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
+
+| Tecla | Qué hace |
+|---|---|
+| `Ctrl+S` / `Ctrl+Q` | Guardar / salir |
+| `Ctrl+F` / `Ctrl+R` | Buscar / reemplazar |
+| `Ctrl+Z` / `Ctrl+Y` | Deshacer / rehacer |
+| `Ctrl+P` | Paleta de comandos (todo lo que Flint sabe hacer, con búsqueda difusa) |
+| `Ctrl+D` | Sumar un cursor en la siguiente aparición de lo seleccionado |
+| `Tab` / `Shift+Tab` | Indentar / des-indentar el bloque seleccionado |
+| `F2` | Prender o apagar la capa modal |
+
+¿Perdido? `Ctrl+P` lista todos los comandos por nombre, y la barra de ayuda de abajo cambia según la capa activa.
+
+## Qué trae
+
+- **Edición sin sorpresas**: buffer en rope (`ropey`), selección con teclado y mouse, deshacer/rehacer agrupado por ráfagas, portapapeles **del sistema** (no un registro interno), múltiples buffers con pestañas, CRLF respetado, búsqueda y reemplazo con o sin regex, ajuste de línea opcional.
+- **Capa modal opcional** (`F2`): modelo selección→acción estilo Kakoune/Helix, con **selección estructural** sobre el árbol de tree-sitter (`n` expande al nodo que contiene la selección, y otra vez sube al padre).
+- **Multi-cursor de verdad**: `Ctrl+D` y `Alt+clic`; escribir, borrar y deshacer actúan sobre todos los cursores a la vez, de forma atómica.
+- **Resaltado y LSP reales**: tree-sitter para Rust, Python, JSON y TOML; cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) conectado hoy a `rust-analyzer` — diagnósticos subrayados en el rango exacto y autocompletado que filtra por lo que ya escribiste. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
+- **Tuyo**: temas en `~/.config/flint/theme.toml` que se recargan solos al guardarlos, perfiles de teclado Flint/Vim/Emacs sobre una tabla tecla→acción, y plugins en Lua que registran comandos en la paleta.
+- **Anchos de pantalla reales**: tabuladores, CJK, emoji y acentos combinantes se miden en columnas de terminal, no en caracteres — el cursor cae donde está el texto.
+
+## Estado
+
+Prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código: LSP solo para Rust, perfiles de teclado que todavía no se definen desde un archivo, API de plugins angosta, y tests que hoy cubren la aritmética de columnas y la indentación pero no la edición completa.
+
+## Licencia
+
+MIT — © 2026 Next Step Technology SpA. Ver [LICENSE](LICENSE).
+
+---
+
+# Cómo se construyó, y qué se probó
+
+De acá para abajo está el registro del desarrollo, fase por fase: qué se implementó, qué bugs reales aparecieron al probarlo y cómo se arreglaron, y qué se dejó afuera a propósito. Es la parte interesante si te importa el *cómo*, y no hace falta leerla para usar Flint.
+
+Una advertencia de lectura: algunas limitaciones que se mencionan en las fases tempranas se resolvieron después. La sección **"Ya resuelto"** del final es la que manda.
 
 ## Qué hace (Fase 0)
 
@@ -126,9 +206,9 @@ Hasta ahora la única forma de instalar Flint era `cargo install --path .` — q
 - Las dependencias (`Depends:` del `control`) no están adivinadas a mano — se calculan con `dpkg-shlibdeps` a partir del binario real. Terminan siendo solo `libc6` y `libgcc-s1`: `arboard` (el portapapeles del sistema) habla X11 por protocolo puro vía `x11rb`, sin enlazar `libX11.so`, así que no suma ninguna dependencia de sistema de ventanas.
 - `dpkg-shlibdeps` necesita un `debian/control` para correr (aunque sea fuera de un build con `debhelper`) — el script arma uno mínimo y descartable solo para esa consulta, y lo borra enseguida; no queda un directorio `debian/` sobrante en el repo.
 
-Se probó de punta a punta: `.deb` construido y su `control`/contenido inspeccionados con `dpkg-deb --info`/`--contents`; extraído sin privilegios de root (`dpkg-deb --extract`) para confirmar que el binario resultante corre igual que el compilado directo — abre un archivo, lo edita y sale, probado con tmux —, sin depender de nada del árbol de `cargo build` (ni rutas relativas al repo). La instalación real con `sudo apt install ./flint_*.deb` no se ejecutó en esta sesión porque hace falta la contraseña de `sudo`, que no puedo escribir yo — queda para que la corras vos cuando quieras (`packaging/build-deb.sh` imprime el comando exacto al terminar).
+Se probó de punta a punta: `.deb` construido y su `control`/contenido inspeccionados con `dpkg-deb --info`/`--contents`; extraído sin privilegios de root (`dpkg-deb --extract`) para confirmar que el binario resultante corre igual que el compilado directo — abre un archivo, lo edita y sale, probado con tmux —, sin depender de nada del árbol de `cargo build` (ni rutas relativas al repo). La instalación real con `sudo apt install ./flint_*.deb` se hizo después, a mano: el paquete instala en `/usr/bin/flint` y corre sin el árbol de `cargo` presente.
 
-Lo que queda deliberadamente afuera de este alcance: Homebrew y binarios de una release de GitHub necesitan un repositorio público al que apuntar, que este proyecto todavía no tiene.
+Lo que queda afuera de este alcance: Homebrew y binarios adjuntos a una release de GitHub. El repositorio público ya existe, así que dejaron de estar bloqueados — son el próximo paso natural de distribución, no un imposible.
 
 ## Qué hace (auto-indentación, búsqueda con regex, ajuste de línea)
 
