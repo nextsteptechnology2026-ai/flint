@@ -1151,6 +1151,8 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
             let ed = &mut app.buffers[app.active].ed;
             ed.wrap = !ed.wrap;
             ed.col_offset = 0;
+            // Sin ajuste no existe "media línea arriba del borde".
+            ed.row_sub_offset = 0;
             ed.status = if ed.wrap {
                 "Ajuste de línea activado".to_string()
             } else {

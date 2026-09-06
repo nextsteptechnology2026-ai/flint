@@ -237,6 +237,12 @@ pub struct Editor {
     /// Selecciones adicionales (multi-cursor). Vacío la mayor parte del tiempo.
     pub secondary: Vec<Selection>,
     pub row_offset: usize,
+    /// Cuántas filas visuales de la *primera* línea en pantalla quedan
+    /// arriba del borde. Solo se usa con ajuste de línea, y casi siempre es
+    /// 0: hace falta cuando una sola línea lógica ocupa más filas que la
+    /// pantalla entera, donde desplazarse de a líneas enteras dejaría partes
+    /// de esa línea imposibles de ver.
+    pub row_sub_offset: usize,
     pub col_offset: usize,
     pub dirty: bool,
     pub status: String,
@@ -330,6 +336,7 @@ impl Editor {
             selection_anchor: None,
             secondary: Vec::new(),
             row_offset: 0,
+            row_sub_offset: 0,
             col_offset: 0,
             dirty: false,
             status,

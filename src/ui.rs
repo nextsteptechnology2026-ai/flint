@@ -532,40 +532,56 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
         .saturating_sub(diag_col_w) as usize;
     let line_count = ed.line_count();
 
-    if ed.cursor.line < ed.row_offset {
-        ed.row_offset = ed.cursor.line;
-    }
-    // A diferencia del modo sin ajuste, acá una línea lógica puede ocupar
-    // varias filas — hay que contar filas visuales entre `row_offset` y el
-    // cursor, no líneas, para saber si el cursor sigue entrando en pantalla.
-    // Si una sola línea (la del cursor) ya es más alta que la pantalla
-    // entera, se muestra desde su principio — verla completa haría falta
-    // desplazamiento dentro de una misma línea, que queda afuera de esta
-    // primera versión de ajuste.
+    // A diferencia del modo sin ajuste, el tope de la pantalla no es una
+    // línea sino una *fila visual*: el par (`row_offset`, `row_sub_offset`).
+    // Esa segunda mitad es lo que permite desplazarse por dentro de una
+    // línea que sola ocupa más filas que la pantalla entera — con el tope
+    // atado a líneas enteras, el resto de esa línea era imposible de ver.
     let cursor_vis = ed.display_col(ed.cursor.line, ed.cursor.col);
+    let cursor_sub = {
+        let starts = ed.wrap_row_starts(ed.cursor.line, content_w.max(1));
+        ed.wrap_row_of(&starts, cursor_vis)
+    };
     if visible_rows > 0 && content_w > 0 {
+        // Hacia arriba: el cursor no puede quedar por encima del tope.
+        if (ed.cursor.line, cursor_sub) < (ed.row_offset, ed.row_sub_offset) {
+            ed.row_offset = ed.cursor.line;
+            ed.row_sub_offset = cursor_sub;
+        }
+        // Hacia abajo: mientras el cursor no entre, el tope avanza una fila
+        // visual por vez (que puede ser la siguiente de la misma línea).
         loop {
             let mut rows_used = 0usize;
+            let mut line = ed.row_offset;
+            let mut sub = ed.row_sub_offset;
             let mut cursor_fits = false;
-            let last = ed.cursor.line.min(line_count.saturating_sub(1));
-            for line in ed.row_offset..=last {
-                let starts = ed.wrap_row_starts(line, content_w);
-                let line_rows = starts.len();
+            while line <= ed.cursor.line && line < line_count {
+                let rows = ed.wrap_row_starts(line, content_w).len();
                 if line == ed.cursor.line {
-                    let cursor_sub = ed.wrap_row_of(&starts, cursor_vis);
-                    rows_used += cursor_sub + 1;
+                    rows_used += cursor_sub.saturating_sub(sub) + 1;
                     cursor_fits = rows_used <= visible_rows;
-                } else {
-                    rows_used += line_rows;
+                    break;
                 }
+                rows_used += rows - sub.min(rows);
+                sub = 0;
+                line += 1;
                 if rows_used > visible_rows {
                     break;
                 }
             }
-            if cursor_fits || ed.row_offset >= ed.cursor.line {
+            if cursor_fits {
                 break;
             }
-            ed.row_offset += 1;
+            // Avanzar el tope una fila visual.
+            let rows_here = ed.wrap_row_starts(ed.row_offset, content_w).len();
+            if ed.row_sub_offset + 1 < rows_here {
+                ed.row_sub_offset += 1;
+            } else if ed.row_offset < line_count.saturating_sub(1) {
+                ed.row_offset += 1;
+                ed.row_sub_offset = 0;
+            } else {
+                break;
+            }
         }
     }
     ed.col_offset = 0;
@@ -624,11 +640,16 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
         // fija cada `content_w`: una fila termina antes si el carácter
         // siguiente no entra entero.
         let starts = ed.wrap_row_starts(line_idx, content_w.max(1));
-        for (sub, &col_from) in starts.iter().enumerate() {
+        // Solo la primera línea de la pantalla puede empezar por el medio.
+        let desde = if line_idx == ed.row_offset { ed.row_sub_offset } else { 0 };
+        for (sub, &col_from) in starts.iter().enumerate().skip(desde) {
             if row >= visible_rows {
                 break;
             }
             let col_to = starts.get(sub + 1).copied().unwrap_or_else(|| line.len());
+            // El número de línea va en su primera fila; si esa fila quedó
+            // arriba del borde, la primera que se ve es continuación y va sin
+            // numerar, igual que cualquier otra continuación.
             let show_gutter = sub == 0;
             let diag_span = if show_gutter {
                 match ed.diagnostic_severity_for_line(line_idx) {
@@ -952,12 +973,15 @@ pub fn screen_to_pos(ed: &Editor, text_area: Rect, col: u16, row: u16) -> Option
         // Los mismos cortes que usó el dibujo: si acá se recalcularan de otra
         // forma, un clic caería en un carácter distinto del que se ve.
         let starts = ed.wrap_row_starts(line, content_w.max(1));
-        if remaining < starts.len() {
+        // La primera línea puede estar mostrándose desde el medio.
+        let desde = if line == ed.row_offset { ed.row_sub_offset } else { 0 };
+        let visibles = starts.len().saturating_sub(desde);
+        if remaining < visibles {
             let col_in_sub = if col >= content_x { (col - content_x) as usize } else { 0 };
-            let vis_col = starts[remaining] + col_in_sub;
+            let vis_col = starts[desde + remaining] + col_in_sub;
             return Some(Position { line, col: ed.col_from_display(line, vis_col) });
         }
-        remaining -= starts.len();
+        remaining -= visibles;
         line += 1;
     }
 }
