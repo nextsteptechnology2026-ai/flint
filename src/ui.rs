@@ -9,6 +9,28 @@ use ratatui::{
 use crate::editor::{Editor, HighlightKind, Layer, LineEnding, Mode, Position, Selection, Severity};
 use crate::theme::Theme;
 
+/// El estilo completo de un tramo resaltado. Casi todas las categorías son
+/// solo un color, pero las de texto con formato (Markdown) se distinguen por
+/// forma: un título en negrita, un link subrayado. Poner *color* donde va
+/// negrita sería traducir mal — la negrita ya existe en la terminal.
+///
+/// No agregan claves nuevas al `theme.toml`: reusan colores que el tema ya
+/// define, así un tema viejo sigue funcionando tal cual.
+fn highlight_style(theme: &Theme, kind: HighlightKind) -> Style {
+    let base = Style::default();
+    match kind {
+        HighlightKind::Heading => base
+            .fg(theme.syn_keyword)
+            .add_modifier(Modifier::BOLD),
+        HighlightKind::Strong => base.fg(theme.text_fg).add_modifier(Modifier::BOLD),
+        HighlightKind::Emphasis => base.fg(theme.text_fg).add_modifier(Modifier::ITALIC),
+        HighlightKind::Link => base
+            .fg(theme.syn_function)
+            .add_modifier(Modifier::UNDERLINED),
+        other => base.fg(highlight_color(theme, other)),
+    }
+}
+
 fn highlight_color(theme: &Theme, kind: HighlightKind) -> ratatui::style::Color {
     match kind {
         HighlightKind::Keyword => theme.syn_keyword,
@@ -23,6 +45,11 @@ fn highlight_color(theme: &Theme, kind: HighlightKind) -> ratatui::style::Color 
         HighlightKind::Variable => theme.text_fg,
         HighlightKind::Property => theme.syn_property,
         HighlightKind::Attribute => theme.syn_attribute,
+        // Las de Markdown nunca llegan acá: las resuelve `highlight_style`
+        // entero, porque no son solo color.
+        HighlightKind::Heading => theme.syn_keyword,
+        HighlightKind::Strong | HighlightKind::Emphasis => theme.text_fg,
+        HighlightKind::Link => theme.syn_function,
     }
 }
 
@@ -834,7 +861,7 @@ fn build_line_spans(
         let s = hs.max(start);
         let e = he.min(end);
         if s < e {
-            let style = Style::default().fg(highlight_color(theme, kind));
+            let style = highlight_style(theme, kind);
             for slot in &mut styles[s - start..e - start] {
                 *slot = style;
             }

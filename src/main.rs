@@ -147,6 +147,10 @@ fn lang_id_str(lang: &highlight::Lang) -> &'static str {
         highlight::Lang::Python => "python",
         highlight::Lang::Json => "json",
         highlight::Lang::Toml => "toml",
+        // El identificador que usa LSP para este lenguaje. Markdown no tiene
+        // servidor conectado, pero el nombre es el que corresponde por si
+        // alguna vez lo tiene.
+        highlight::Lang::Markdown => "markdown",
     }
 }
 

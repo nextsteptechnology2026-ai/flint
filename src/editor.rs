@@ -90,6 +90,13 @@ pub enum HighlightKind {
     Variable,
     Property,
     Attribute,
+    /// Las cuatro siguientes son de texto con formato (Markdown), no de
+    /// código: no se distinguen por color sino por *forma* — un título en
+    /// negrita, un link subrayado. Ver `highlight_style` en `ui.rs`.
+    Heading,
+    Strong,
+    Emphasis,
+    Link,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -261,6 +261,7 @@ Además de la marca en el margen izquierdo (✖ error, ▲ warning, ● info/hin
 | `.py` | Sí (tree-sitter) | No |
 | `.json` | Sí (tree-sitter) | No |
 | `.toml` | Sí (tree-sitter) | No |
+| `.md` / `.markdown` | Sí (tree-sitter, dos gramáticas: bloques e inline) | No |
 | cualquier otra | No — texto plano | No |
 
 Cualquier extensión no reconocida se edita igual de bien, sin resaltado ni autocompletado — es el comportamiento de "editor de rescate" heredado de la paridad con `nano`.
