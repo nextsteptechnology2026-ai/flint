@@ -256,7 +256,7 @@ Además de la marca en el margen izquierdo (✖ error, ▲ warning, ● info/hin
 
 ## Vista previa de Markdown
 
-`Ctrl+E` (o "Vista previa de Markdown" en la paleta), en un archivo `.md` o `.markdown`, cambia el área de texto por el documento **renderizado**: los `#`, `**` y `[]()` desaparecen y queda el resultado — títulos en negrita, viñetas de verdad, citas con su barra al margen, cercos de código en un recuadro y con su contenido resaltado según el lenguaje que declaren, y los links subrayados con su URL al lado.
+`Ctrl+E` (o "Vista previa de Markdown" en la paleta), en un archivo `.md` o `.markdown`, cambia el área de texto por el documento **renderizado**: los `#`, `**` y `[]()` desaparecen y queda el resultado — títulos en negrita, con sangría por nivel y una raya debajo de los dos primeros (una terminal no puede hacer letras más grandes), viñetas de verdad, citas con su barra al margen, cercos de código en un recuadro y con su contenido resaltado según el lenguaje que declaren, y los links subrayados con su URL al lado.
 
 Es una vista de **solo lectura** sobre el mismo buffer; editar sigue siendo sobre el texto fuente, que es lo que uno quiere en un `.md` donde la sintaxis *es* el contenido. Mientras está activa:
 

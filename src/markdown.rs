@@ -126,6 +126,8 @@ pub fn render(
     let mut en_cita = false;
     let mut codigo: Option<(String, String)> = None; // (lenguaje, contenido)
     let mut destino = String::new();
+    let mut nivel_titulo = 1usize;
+    let mut sangria_titulo = 0usize;
 
     let dim = Style::default().fg(theme.dim);
 
@@ -143,20 +145,48 @@ pub fn render(
                 if !salida.is_empty() {
                     salida.push(Line::from(""));
                 }
-                // La jerarquía se ve por sangría y por una marca, no por
-                // tamaño: en una terminal todas las letras miden igual.
-                let marca = Span::styled(
-                    format!("{} ", "#".repeat(n)),
-                    Style::default().fg(theme.dim),
-                );
+                // Los `#` no se muestran: esto es el documento renderizado,
+                // no su fuente. Como en una terminal todas las letras miden
+                // igual y no se puede hacer un título "más grande", la
+                // jerarquía se da con sangría —dos espacios por nivel— y con
+                // una línea debajo en los dos niveles principales.
+                nivel_titulo = n;
+                // La sangría se corta en el cuarto nivel: más adentro, un
+                // documento con muchos subtítulos se iría contra el borde
+                // derecho sin ganar claridad.
+                sangria_titulo = 2 * n.saturating_sub(1).min(3);
+                let sangria = " ".repeat(sangria_titulo);
                 estilo = Style::default()
                     .fg(theme.syn_keyword)
                     .add_modifier(Modifier::BOLD);
-                flujo = Some(Flujo::nuevo(ancho, vec![marca], vec![Span::raw("  ".to_string())]));
+                flujo = Some(Flujo::nuevo(
+                    ancho,
+                    vec![Span::raw(sangria.clone())],
+                    vec![Span::raw(sangria)],
+                ));
             }
             Event::End(TagEnd::Heading(_)) => {
                 if let Some(f) = flujo.take() {
-                    salida.extend(f.terminar());
+                    let lineas = f.terminar();
+                    let ancho_titulo = lineas
+                        .iter()
+                        .map(|l| ancho_spans(&l.spans))
+                        .max()
+                        .unwrap_or(0);
+                    salida.extend(lineas);
+                    // Solo los dos primeros niveles llevan raya: si la
+                    // llevaran todos, un documento con muchos subtítulos
+                    // sería más rayas que texto.
+                    if nivel_titulo <= 2 && ancho_titulo > sangria_titulo {
+                        // La raya arranca donde arranca el título, no en el
+                        // margen, y mide lo que mide el texto.
+                        let largo = (ancho_titulo - sangria_titulo).min(ancho);
+                        let raya = if nivel_titulo == 1 { "━" } else { "─" };
+                        salida.push(Line::from(vec![
+                            Span::raw(" ".repeat(sangria_titulo)),
+                            Span::styled(raya.repeat(largo), dim),
+                        ]));
+                    }
                 }
                 estilo = Style::default().fg(theme.text_fg);
             }
@@ -404,6 +434,20 @@ mod tests {
     fn los_marcadores_desaparecen_y_queda_el_texto() {
         let v = texto("Un **fuerte** y *suave*.\n", 40);
         assert!(v.iter().any(|l| l == "Un fuerte y suave."), "{v:?}");
+    }
+
+    #[test]
+    fn los_titulos_no_muestran_sus_almohadillas() {
+        let v = texto("# Uno\n\n## Dos\n\n### Tres\n", 40);
+        assert!(!v.iter().any(|l| l.contains('#')), "esto es el render, no el fuente: {v:?}");
+        // La jerarquía queda en la sangría y en la raya de los dos primeros
+        // niveles, que es lo único que una terminal puede ofrecer: no hay
+        // letras más grandes.
+        assert!(v.iter().any(|l| l == "Uno"), "{v:?}");
+        assert!(v.iter().any(|l| l == "━━━"), "{v:?}");
+        assert!(v.iter().any(|l| l == "  Dos"), "{v:?}");
+        assert!(v.iter().any(|l| l == "  ───"), "{v:?}");
+        assert!(v.iter().any(|l| l == "    Tres"), "{v:?}");
     }
 
     #[test]
