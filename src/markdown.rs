@@ -407,6 +407,23 @@ mod tests {
     }
 
     #[test]
+    fn los_asteriscos_con_espacio_adentro_no_son_negrita() {
+        // CommonMark: `** texto **` con espacios pegados a los asteriscos no
+        // es énfasis, y los asteriscos quedan como texto literal. Sin
+        // espacios sí lo es. Es la regla de "delimitadores flanqueantes".
+        let con_espacios = texto("** Esta es una prueba **\n", 60);
+        assert!(
+            con_espacios.iter().any(|l| l.contains("**")),
+            "los asteriscos se muestran tal cual: {con_espacios:?}"
+        );
+        let sin_espacios = texto("**Esta es una prueba**\n", 60);
+        assert!(
+            !sin_espacios.iter().any(|l| l.contains("**")),
+            "acá sí es negrita y los marcadores desaparecen: {sin_espacios:?}"
+        );
+    }
+
+    #[test]
     fn las_listas_llevan_vinneta() {
         let v = texto("- uno\n- dos\n", 40);
         assert!(v.iter().any(|l| l == "• uno"), "{v:?}");
