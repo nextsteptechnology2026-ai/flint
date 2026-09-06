@@ -1,6 +1,6 @@
 [package]
 name = "flint"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "Editor de terminal con capa modal opcional, resaltado de sintaxis y LSP via tree-sitter, multi-cursor, temas configurables y plugins en Lua"
 authors = ["Next Step Technology SpA <nextsteptechnology2026@gmail.com>"]

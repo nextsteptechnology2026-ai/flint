@@ -434,7 +434,7 @@ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
 name = "flint"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arboard",
  "crossterm",
