@@ -60,6 +60,7 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+W` | Cerrar el buffer activo (pregunta si hay cambios sin guardar) |
 | `Ctrl+PageDown` / `Ctrl+PageUp` | Siguiente / anterior buffer |
 | `Ctrl+L` | Alternar ajuste de línea (partir líneas largas en vez de scroll horizontal) |
+| `Ctrl+E` | Vista previa de Markdown (solo en `.md`): muestra el documento formateado, de solo lectura |
 | `F2` | Activar/desactivar la capa modal |
 | `Esc` | Si hay cursores extra, los descarta |
 | Flechas / `Home` / `End` / `PageUp` / `PageDown` | Mover el cursor |
@@ -252,6 +253,21 @@ Ver `plugins/ejemplo.lua` para tres comandos reales y completos (insertar la fec
 Además de la marca en el margen izquierdo (✖ error, ▲ warning, ● info/hint — resume la severidad más alta de toda la línea), el rango exacto que reportó el servidor se subraya con color en el texto. Un error sobre un solo método mal escrito, por ejemplo, subraya solo esas letras, no la línea entera.
 
 `Ctrl+G` salta al siguiente diagnóstico (da la vuelta al llegar al final) y muestra su mensaje en la barra de estado.
+
+## Vista previa de Markdown
+
+`Ctrl+E` (o "Vista previa de Markdown" en la paleta), en un archivo `.md` o `.markdown`, cambia el área de texto por el documento **renderizado**: los `#`, `**` y `[]()` desaparecen y queda el resultado — títulos en negrita, viñetas de verdad, citas con su barra al margen, cercos de código en un recuadro y con su contenido resaltado según el lenguaje que declaren, y los links subrayados con su URL al lado.
+
+Es una vista de **solo lectura** sobre el mismo buffer; editar sigue siendo sobre el texto fuente, que es lo que uno quiere en un `.md` donde la sintaxis *es* el contenido. Mientras está activa:
+
+| Tecla | Acción |
+|---|---|
+| `↑` / `↓` | Desplazar una fila |
+| `PageUp` / `PageDown` | Desplazar una pantalla |
+| `Home` / `End` | Principio / final del documento |
+| `Esc` o `Ctrl+E` | Volver a editar |
+
+Los atajos con `Ctrl` (guardar, salir, la paleta) siguen funcionando; cualquier otra tecla no hace nada y lo avisa, para no editar a ciegas algo que no se está viendo. El párrafo se reparte según el ancho de la ventana, así que el render no respeta los saltos de línea del fuente: arma los suyos.
 
 ## Lenguajes soportados
 

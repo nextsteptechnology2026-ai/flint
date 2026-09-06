@@ -260,6 +260,14 @@ pub struct Editor {
     /// pantalla en vez de desplazarse horizontalmente. Apagado por defecto
     /// (`col_offset`/scroll horizontal, el comportamiento de siempre).
     pub wrap: bool,
+    /// Vista previa de Markdown: se muestra el documento formateado, de solo
+    /// lectura, en vez del texto fuente. Solo tiene sentido —y solo se
+    /// enciende— en un archivo Markdown.
+    pub preview: bool,
+    /// Primera fila de la vista previa que se muestra. Es un espacio de
+    /// filas propio, distinto del `row_offset` del texto fuente: el
+    /// documento renderizado no tiene las mismas líneas que el original.
+    pub preview_offset: usize,
     /// Registro interno de copiar/pegar propio de Flint (todavía no habla con
     /// el portapapeles del sistema — ver README).
     pub register: Option<String>,
@@ -349,6 +357,8 @@ impl Editor {
             diagnostics: Vec::new(),
             layer: Layer::Direct,
             wrap: false,
+            preview: false,
+            preview_offset: 0,
             register: None,
             tab_width: DEFAULT_TAB_WIDTH,
             undo_stack: Vec::new(),

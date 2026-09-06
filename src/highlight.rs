@@ -35,6 +35,20 @@ impl Lang {
     }
 }
 
+/// El lenguaje que declara un cerco de código de Markdown (```rust), si
+/// Flint lo conoce. Acepta tanto el nombre como la extensión, que es como se
+/// escriben en la práctica.
+pub fn lang_for_name(nombre: &str) -> Option<Lang> {
+    match nombre.to_ascii_lowercase().as_str() {
+        "rust" | "rs" => Some(Lang::Rust),
+        "python" | "py" => Some(Lang::Python),
+        "json" => Some(Lang::Json),
+        "toml" => Some(Lang::Toml),
+        "markdown" | "md" => Some(Lang::Markdown),
+        _ => None,
+    }
+}
+
 pub fn lang_for_path(path: &Path) -> Option<Lang> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -179,6 +193,33 @@ impl LanguageHighlighter {
         }
 
         Some(LanguageHighlighter { config, language, injected })
+    }
+
+    /// El resaltado de un texto suelto, agrupado por línea y en columnas de
+    /// carácter — la misma forma que `Editor::highlights_by_line`, pero para
+    /// un fragmento que no es un buffer (el contenido de un cerco de código
+    /// dentro de la vista previa de Markdown).
+    pub fn highlight_lines(&self, source: &str) -> Vec<Vec<(usize, usize, HighlightKind)>> {
+        let mut lineas: Vec<(usize, usize, &str)> = Vec::new();
+        let mut byte = 0usize;
+        for linea in source.split_inclusive('\n') {
+            let sin_salto = linea.trim_end_matches(['\n', '\r']);
+            lineas.push((byte, byte + sin_salto.len(), sin_salto));
+            byte += linea.len();
+        }
+        let mut salida = vec![Vec::new(); lineas.len()];
+        for (rango, kind) in self.highlight_bytes(source) {
+            for (i, &(ini, fin, texto)) in lineas.iter().enumerate() {
+                let s = rango.start.max(ini);
+                let e = rango.end.min(fin);
+                if s < e {
+                    let col_ini = texto[..s - ini].chars().count();
+                    let col_fin = texto[..e - ini].chars().count();
+                    salida[i].push((col_ini, col_fin, kind));
+                }
+            }
+        }
+        salida
     }
 
     /// Analiza el documento entero y devuelve su árbol de sintaxis, para

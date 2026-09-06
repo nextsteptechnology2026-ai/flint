@@ -16,7 +16,7 @@ use crate::theme::Theme;
 ///
 /// No agregan claves nuevas al `theme.toml`: reusan colores que el tema ya
 /// define, así un tema viejo sigue funcionando tal cual.
-fn highlight_style(theme: &Theme, kind: HighlightKind) -> Style {
+pub fn highlight_style(theme: &Theme, kind: HighlightKind) -> Style {
     let base = Style::default();
     match kind {
         HighlightKind::Heading => base
@@ -83,15 +83,27 @@ pub struct DrawAreas {
 /// lista YA filtrada por lo tipeado desde que se abrió el popup (mismo
 /// esquema que `palette_matches`): acá solo se dibuja, el filtrado vive en
 /// `main`, donde también vive el de la paleta.
-pub fn draw(
-    f: &mut Frame,
-    ed: &mut Editor,
-    palette_matches: &[String],
-    completion_matches: &[(String, Option<String>)],
-    tab_labels: &[String],
-    active_tab: usize,
-    theme: &Theme,
-) -> DrawAreas {
+/// Lo que `main` preparó para este frame y `draw` solamente dibuja: las
+/// listas de los popups ya filtradas, las pestañas, y el documento
+/// renderizado cuando la vista previa está activa (se arma en `main`, que es
+/// quien tiene el resaltador y puede cachearlo entre frames).
+#[derive(Default)]
+pub struct FrameData<'a> {
+    pub palette_matches: &'a [String],
+    pub completion_matches: &'a [(String, Option<String>)],
+    pub tab_labels: &'a [String],
+    pub active_tab: usize,
+    pub preview: Option<&'a [Line<'static>]>,
+}
+
+pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> DrawAreas {
+    let FrameData {
+        palette_matches,
+        completion_matches,
+        tab_labels,
+        active_tab,
+        preview,
+    } = *data;
     let size = f.area();
     let show_tabs = tab_labels.len() > 1;
     let mut constraints = vec![Constraint::Length(1)];
@@ -119,7 +131,10 @@ pub fn draw(
     let help_area = chunks[i + 2];
 
     draw_title(f, ed, title_area, theme);
-    draw_text(f, ed, text_area, theme);
+    match preview {
+        Some(lineas) => draw_preview(f, ed, lineas, text_area, theme),
+        None => draw_text(f, ed, text_area, theme),
+    }
     draw_message(f, ed, message_area, theme);
     draw_help(f, ed, help_area, theme);
 
@@ -380,6 +395,26 @@ fn draw_palette_popup(f: &mut Frame, text_area: Rect, matches: &[String], select
             .collect()
     };
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// La vista previa: el documento ya formateado, de solo lectura. No hay
+/// cursor de terminal acá — no se está editando esto — y el desplazamiento
+/// tiene su propio offset, porque las filas del render no se corresponden
+/// una a una con las líneas del texto fuente.
+fn draw_preview(f: &mut Frame, ed: &mut Editor, lineas: &[Line<'static>], area: Rect, theme: &Theme) {
+    let alto = area.height as usize;
+    let max_offset = lineas.len().saturating_sub(alto.max(1));
+    if ed.preview_offset > max_offset {
+        ed.preview_offset = max_offset;
+    }
+    let visibles: Vec<Line<'static>> = lineas
+        .iter()
+        .skip(ed.preview_offset)
+        .take(alto)
+        .cloned()
+        .collect();
+    let p = Paragraph::new(visibles).style(Style::default().fg(theme.text_fg));
+    f.render_widget(p, area);
 }
 
 fn draw_text(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {

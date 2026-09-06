@@ -1,5 +1,6 @@
 mod editor;
 mod highlight;
+mod markdown;
 mod keymap;
 mod lsp;
 mod plugins;
@@ -139,6 +140,12 @@ struct App {
     /// (sin servidor gráfico, por ejemplo) — ahí copiar/cortar/pegar caen
     /// solo al registro interno, sin romper nada.
     clipboard: Option<arboard::Clipboard>,
+    /// La vista previa ya renderizada y de qué estado salió
+    /// (buffer, versión del contenido, ancho). Renderizar Markdown y
+    /// resaltar sus cercos de código es caro comparado con dibujar, así que
+    /// se rehace solo cuando cambió algo de lo que depende, no en cada frame.
+    preview_lines: Vec<ratatui::text::Line<'static>>,
+    preview_key: Option<(usize, u64, u16)>,
 }
 
 fn lang_id_str(lang: &highlight::Lang) -> &'static str {
@@ -178,6 +185,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Buffer anterior", Action::PrevBuffer),
         ("Cerrar buffer", Action::CloseBuffer),
         ("Alternar ajuste de línea", Action::ToggleWrap),
+        ("Vista previa de Markdown (^E)", Action::TogglePreview),
         ("Indentar líneas (Tab)", Action::InsertTab),
         ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
     ];
@@ -364,6 +372,8 @@ fn main() -> io::Result<()> {
         theme_mtime,
         theme_next_check: Instant::now() + THEME_RELOAD_INTERVAL,
         clipboard: arboard::Clipboard::new().ok(),
+        preview_lines: Vec::new(),
+        preview_key: None,
     };
 
     let result = run(&mut terminal, &mut app);
@@ -428,7 +438,7 @@ fn setup_lsp(
 
     ed.status = format!("Iniciando {cmd}…");
     let _ = terminal.draw(|f| {
-        ui::draw(f, ed, &[], &[], &[], 0, theme);
+        ui::draw(f, ed, &ui::FrameData::default(), theme);
     });
 
     let (ok, incremental) = finish_init(&mut client, ed, &uri, &root, lang_id, cmd);
@@ -518,7 +528,7 @@ fn prompt_install(
     );
     loop {
         let _ = terminal.draw(|f| {
-            ui::draw(f, ed, &[], &[], &[], 0, theme);
+            ui::draw(f, ed, &ui::FrameData::default(), theme);
         });
         if matches!(event::poll(Duration::from_millis(200)), Ok(true))
             && let Ok(Event::Key(key)) = event::read()
@@ -536,7 +546,7 @@ fn prompt_install(
 
     ed.status = format!("Instalando {cmd}…");
     let _ = terminal.draw(|f| {
-        ui::draw(f, ed, &[], &[], &[], 0, theme);
+        ui::draw(f, ed, &ui::FrameData::default(), theme);
     });
     match std::process::Command::new(install_cmd)
         .args(install_args)
@@ -588,16 +598,22 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
             _ => Vec::new(),
         };
         let tab_labels: Vec<String> = app.buffers.iter().map(Buffer::tab_label).collect();
+        let ancho_total = terminal.size().map(|s| s.width).unwrap_or(80);
+        refresh_preview(app, ancho_total);
+        let preview_lines = if app.buffers[app.active].ed.preview {
+            Some(&app.preview_lines)
+        } else {
+            None
+        };
         terminal.draw(|f| {
-            let areas = ui::draw(
-                f,
-                &mut app.buffers[app.active].ed,
-                &palette_labels,
-                &completion_view,
-                &tab_labels,
-                app.active,
-                &app.theme,
-            );
+            let datos = ui::FrameData {
+                palette_matches: &palette_labels,
+                completion_matches: &completion_view,
+                tab_labels: &tab_labels,
+                active_tab: app.active,
+                preview: preview_lines.map(Vec::as_slice),
+            };
+            let areas = ui::draw(f, &mut app.buffers[app.active].ed, &datos, &app.theme);
             app.text_area = areas.text_area;
             app.tabs_area = areas.tabs_area;
         })?;
@@ -888,6 +904,27 @@ fn sync_lsp_if_needed(app: &mut App) {
 /// reabrirlo. Solo revisa la fecha de modificación (barato); el parseo
 /// completo (`Theme::load`, ya usado al arrancar) solo corre cuando de
 /// verdad cambió.
+/// Rehace la vista previa si cambió el buffer activo, su contenido o el
+/// ancho de la pantalla. Si no, deja la que ya estaba.
+fn refresh_preview(app: &mut App, ancho_total: u16) {
+    if !app.buffers[app.active].ed.preview {
+        app.preview_key = None;
+        app.preview_lines.clear();
+        return;
+    }
+    let gutter = app.buffers[app.active].ed.gutter_width();
+    let ancho = ancho_total.saturating_sub(gutter + 2);
+    let clave = (app.active, app.buffers[app.active].ed.content_version, ancho);
+    if app.preview_key == Some(clave) {
+        return;
+    }
+    let fuente = app.buffers[app.active].ed.rope.to_string();
+    app.preview_lines = markdown::render(&fuente, ancho as usize, &app.theme, &|nombre| {
+        markdown::resaltador_para(nombre)
+    });
+    app.preview_key = Some(clave);
+}
+
 fn check_theme_reload(app: &mut App) {
     let Some(path) = app.theme_path.as_ref() else {
         return;
@@ -919,7 +956,42 @@ fn check_theme_reload(app: &mut App) {
     };
 }
 
+/// Mientras la vista previa está activa el buffer es de solo lectura: las
+/// teclas de navegación desplazan el documento renderizado y el resto no
+/// hace nada, para no editar a ciegas algo que no se está viendo. Los
+/// atajos con `Ctrl` (guardar, salir, la paleta, y el propio `^E`) siguen
+/// funcionando: se dejan pasar al camino de siempre.
+fn handle_preview_key(app: &mut App, key: KeyEvent, page_size: usize) {
+    let ed = &mut app.buffers[app.active].ed;
+    match key.code {
+        KeyCode::Up => ed.preview_offset = ed.preview_offset.saturating_sub(1),
+        KeyCode::Down => ed.preview_offset = ed.preview_offset.saturating_add(1),
+        KeyCode::PageUp => ed.preview_offset = ed.preview_offset.saturating_sub(page_size),
+        KeyCode::PageDown => ed.preview_offset = ed.preview_offset.saturating_add(page_size),
+        KeyCode::Home => ed.preview_offset = 0,
+        // `draw_preview` recorta al final real del documento renderizado,
+        // que es quien conoce su largo.
+        KeyCode::End => ed.preview_offset = usize::MAX / 2,
+        KeyCode::Esc => {
+            ed.preview = false;
+            ed.status = "Vista previa desactivada".to_string();
+        }
+        _ => {
+            ed.status = "Vista previa: solo lectura — ^E o Esc para volver a editar".to_string();
+        }
+    }
+}
+
 fn handle_key(app: &mut App, key: KeyEvent, page_size: usize) {
+    let buf = &app.buffers[app.active];
+    if buf.ed.preview
+        && matches!(buf.ed.mode, Mode::Editing)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !matches!(key.code, KeyCode::F(_))
+    {
+        handle_preview_key(app, key, page_size);
+        return;
+    }
     match app.buffers[app.active].ed.mode {
         Mode::Editing => handle_layer_key(app, key, page_size),
         Mode::Prompt { .. } => handle_prompt_key(app, key),
@@ -1146,6 +1218,22 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         Action::CloseBuffer => {
             let multi = app.buffers.len() > 1;
             try_quit(&mut app.buffers[app.active].ed, multi);
+        }
+        Action::TogglePreview => {
+            let buf = &mut app.buffers[app.active];
+            // La vista previa solo tiene sentido en Markdown: en cualquier
+            // otro archivo el texto fuente ya es lo que hay que ver.
+            if !matches!(buf.lang, Some(highlight::Lang::Markdown)) {
+                buf.ed.status = "La vista previa es solo para archivos Markdown".to_string();
+            } else {
+                buf.ed.preview = !buf.ed.preview;
+                buf.ed.preview_offset = 0;
+                buf.ed.status = if buf.ed.preview {
+                    "Vista previa — ↑↓/PgUp/PgDn desplazan, ^E o Esc vuelve a editar".to_string()
+                } else {
+                    "Vista previa desactivada".to_string()
+                };
+            }
         }
         Action::ToggleWrap => {
             let ed = &mut app.buffers[app.active].ed;

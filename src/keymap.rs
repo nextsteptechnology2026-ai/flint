@@ -36,6 +36,7 @@ pub enum Action {
     PrevBuffer,
     CloseBuffer,
     ToggleWrap,
+    TogglePreview,
     MoveLeft(bool),
     MoveRight(bool),
     MoveUp(bool),
@@ -191,6 +192,7 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::Char('o')), OpenFilePrompt);
     d(KeyChord::with_ctrl(T::Char('w')), CloseBuffer);
     d(KeyChord::with_ctrl(T::Char('l')), ToggleWrap);
+    d(KeyChord::with_ctrl(T::Char('e')), TogglePreview);
     d(KeyChord::with_ctrl(T::PageDown), NextBuffer);
     d(KeyChord::with_ctrl(T::PageUp), PrevBuffer);
     d(KeyChord::plain(T::Enter), InsertNewline);
