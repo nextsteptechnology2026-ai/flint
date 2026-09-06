@@ -33,6 +33,14 @@ Chicos:
 8. Homebrew: una fórmula para instalar en macOS/Linux con `brew`. Necesita
    además decidir si se compila desde fuente en la máquina del usuario o se
    publican binarios de macOS, que hoy no se construyen.
+9. La compilación no es reproducible bit a bit: el .deb que armó el runner
+   para la v0.1.3 y el construido en local con el mismo código dan sha256
+   distintos (f286f94e… vs e393b718…). Los dos son correctos — cambian el
+   toolchain, las rutas embebidas y las fechas — pero para un proyecto que
+   distribuye binarios, poder reconstruir uno idéntico al publicado es lo que
+   permite a un tercero verificar que el binario sale de ese código y no de
+   otra cosa. Se ataca con SOURCE_DATE_EPOCH, --remap-path-prefix y fijar la
+   versión del toolchain (rust-toolchain.toml).
 
 Hecho desde la versión anterior de este archivo (no volver a anotarlo):
 - Empaquetado .deb (packaging/build-deb.sh).
