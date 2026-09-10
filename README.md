@@ -26,7 +26,7 @@ Editor de terminal en Rust. Abre como `nano` —las teclas hacen lo que dicen—
      ~
  Iniciando rust-analyzer… · rust-analyzer listo (sync incremental)
  ^S Guardar  ^Q Salir  ^F Buscar  ^R Reemplazar  ^Z Deshacer  ^Y Rehacer
- F2 Capa modal  ^P Paleta  ^Espacio Autocompletar  ^G Diagnóstico  ^D +cur
+ F2 Capa modal  ^P Paleta  ^T Archivos  ^K Comentar  ^U Macro  ^D +cursor
 ```
 
 ## Por qué
@@ -60,6 +60,8 @@ flint archivo.txt                          # abre (o crea) un archivo
 flint                                      # buffer sin nombre
 flint --profile vim archivo.rs             # perfil de teclado Vim (o emacs, flint)
 flint --theme theme.example.toml notas.md  # con un tema propio
+flint --config config.example.toml main.rs # con otra configuración
+flint --actions                            # los nombres de acción para [keys]
 ```
 
 Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
@@ -71,6 +73,9 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 | `Ctrl+Z` / `Ctrl+Y` | Deshacer / rehacer |
 | `Ctrl+P` | Paleta de comandos (todo lo que Flint sabe hacer, con búsqueda difusa) |
 | `Ctrl+D` | Sumar un cursor en la siguiente aparición de lo seleccionado |
+| `Ctrl+T` | Buscador difuso de archivos del proyecto |
+| `Ctrl+K` | Comentar / descomentar las líneas seleccionadas |
+| `Ctrl+U` / `Ctrl+B` | Grabar o terminar una macro / repetirla |
 | `Tab` / `Shift+Tab` | Indentar / des-indentar el bloque seleccionado |
 | `Ctrl+E` | Vista previa de Markdown (en un `.md`) |
 | `F2` | Prender o apagar la capa modal |
@@ -79,17 +84,23 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 
 ## Qué trae
 
+- **Auto-indentación que entiende el código**: `Enter` suma un nivel si quedaste adentro de algo sin cerrar, y baja el cierre a su propia línea. Los delimitadores dentro de cadenas y comentarios no cuentan, porque eso lo dice el árbol y no una cuenta de caracteres.
 - **Edición sin sorpresas**: buffer en rope (`ropey`), selección con teclado y mouse, deshacer/rehacer agrupado por ráfagas, portapapeles **del sistema** (no un registro interno), múltiples buffers con pestañas, CRLF respetado, búsqueda y reemplazo con o sin regex, ajuste de línea opcional.
 - **Capa modal opcional** (`F2`): modelo selección→acción estilo Kakoune/Helix, con **selección estructural** sobre el árbol de tree-sitter (`n` expande al nodo que contiene la selección, y otra vez sube al padre).
 - **Multi-cursor de verdad**: `Ctrl+D` y `Alt+clic`; escribir, borrar y deshacer actúan sobre todos los cursores a la vez, de forma atómica.
-- **Resaltado y LSP reales**: tree-sitter para Rust, Python, JSON, TOML y Markdown (donde la negrita se ve en negrita y la cursiva en cursiva, no en otro color); cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) conectado hoy a `rust-analyzer` — diagnósticos subrayados en el rango exacto y autocompletado que filtra por lo que ya escribiste. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
+- **El lenguaje sale del archivo, no solo de la extensión**: un script sin extensión que empieza con `#!/usr/bin/env python3` se resalta como Python.
+- **Resaltado y LSP reales**: tree-sitter para Rust, Python, JSON, TOML y Markdown (donde la negrita se ve en negrita y la cursiva en cursiva, no en otro color); cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) — diagnósticos subrayados en el rango exacto y autocompletado que filtra por lo que ya escribiste. Trae `rust-analyzer` de fábrica y se probó también contra `pylsp`; cualquier otro servidor es un renglón en `[lsp]`, no un cambio de código. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
 - **Autocompletado en cualquier archivo**: con servidor LSP, sus sugerencias; sin él, las palabras que ya escribiste en el archivo (como `Ctrl+N` en Vim), sin distinguir mayúsculas y ordenadas por cercanía al cursor.
+- **Configurable sin recompilar**: `~/.config/flint/config.toml` decide perfil de teclado, ancho de tabulación, tabuladores o espacios, ajuste de línea, recorte de espacios al guardar y cierre automático de pares — todo eso también **por patrón de archivo** (`[files."*.py"]`), así que Python indenta con espacios y Rust con tabuladores en el mismo editor. Las teclas se redefinen en `[keys]` por el nombre estable de cada acción (`flint --actions` los lista), y los servidores de lenguaje en `[lsp]`, sin tocar el código.
+- **Portapapeles que funciona por SSH**: si no hay servidor gráfico, copiar sale por **OSC 52** hacia la terminal que tenés adelante, en vez de perderse. Configurable (`auto`, `system`, `terminal`, `internal`).
+- **Herramientas de todos los días**: buscador difuso de archivos del proyecto (`Ctrl+T`, con la raíz detectada por `.git`/`Cargo.toml`/…), comentar y descomentar bloques con el token del lenguaje (`Ctrl+K`), macros que graban también lo tipeado (`Ctrl+U`/`Ctrl+B`), ir a línea, y cierre automático de pares con el par del cursor resaltado — los delimitadores que están dentro de una cadena o un comentario no cuentan, porque eso lo sabe el árbol de tree-sitter.
+- **No te pisa el trabajo**: si otro proceso tocó el archivo mientras estaba abierto, guardar pregunta antes de sobrescribir; y cada pocos segundos deja un respaldo de lo que está sin guardar en `~/.local/share/flint/backups/`, que se borra solo al guardar.
 - **Tuyo**: temas en `~/.config/flint/theme.toml` que se recargan solos al guardarlos, perfiles de teclado Flint/Vim/Emacs sobre una tabla tecla→acción, y plugins en Lua que registran comandos en la paleta (se cargan desde `./plugins`, `~/.config/flint/plugins/` y `/usr/share/flint/plugins/`).
 - **Anchos de pantalla reales**: tabuladores, CJK, emoji y acentos combinantes se miden en columnas de terminal, no en caracteres — el cursor cae donde está el texto.
 
 ## Estado
 
-Prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código: LSP solo para Rust, perfiles de teclado que todavía no se definen desde un archivo, API de plugins angosta, y tests que hoy cubren la aritmética de columnas y la indentación pero no la edición completa.
+Prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código: LSP con diagnósticos solo para Rust (el comando de cualquier otro servidor ya se configura en `[lsp]`), API de plugins angosta, resaltado que recalcula todo el documento en vez de reusar el árbol, y paneles divididos, que son la única refactorización grande que queda.
 
 ## Licencia
 
@@ -119,7 +130,7 @@ Una advertencia de lectura: algunas limitaciones que se mencionan en las fases t
 ## Qué hace (Fase 1)
 
 - **Resaltado de sintaxis real** vía [tree-sitter](https://tree-sitter.github.io/), no aproximaciones por regex. Cubre **Rust, Python, JSON, TOML y Markdown** por extensión de archivo (`.rs .py .json .toml .md`); cualquier otra extensión se edita en texto plano, sin romperse. Se recalcula solo cuando el contenido cambia, no en cada redibujado.
-- **Cliente LSP real** (JSON-RPC sobre stdio, en un hilo aparte para no bloquear la interfaz). Hoy solo **Rust está conectado a un servidor** (`rust-analyzer`); es el único lenguaje de los cuatro para el que Flint sabe qué servidor lanzar.
+- **Cliente LSP real** (JSON-RPC sobre stdio, en un hilo aparte para no bloquear la interfaz). Rust trae `rust-analyzer` de fábrica; cualquier otro lenguaje se conecta escribiendo su comando en `[lsp]` en `config.toml`. Se probó de punta a punta con `pylsp` sobre Python: arranque, sincronización incremental, diagnósticos y autocompletado.
   - **Diagnósticos**: se muestran como marca en el margen (✖ error, ▲ warning), resumen en la barra de título, y `Ctrl+G` salta al siguiente y muestra su mensaje real del servidor.
   - **Autocompletado** (`Ctrl+Espacio`): pide sugerencias al servidor en la posición del cursor y las muestra en una lista flotante (↑↓ para elegir, `Enter`/`Tab` para insertar, `Esc` para cancelar). Inserta el texto de la sugerencia tal cual — no reemplaza un prefijo ya escrito ni aplica ediciones estructuradas (`TextEdit`) más complejas.
   - **Sincronización**: se manda el documento completo (no incremental) medio segundo después de la última tecla, para no saturar al servidor mientras se escribe.

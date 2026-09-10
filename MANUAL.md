@@ -32,6 +32,8 @@ flint archivo.txt                      # abre (o crea) archivo.txt
 flint --profile vim archivo.rs         # con el perfil de teclado Vim
 flint --profile emacs archivo.rs       # o Emacs
 flint --theme mi_tema.toml archivo.rs  # con un tema de colores propio
+flint --config mi_config.toml notas.md # con otro archivo de configuración
+flint --actions                        # lista los nombres de acción para [keys]
 flint --help                           # ayuda rápida en la terminal
 flint --version                        # versión instalada
 ```
@@ -57,6 +59,10 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+D` | Agregar un cursor en la siguiente aparición del texto seleccionado |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copiar / Cortar / Pegar — con el portapapeles del sistema |
 | `Ctrl+O` | Abrir un archivo en un buffer nuevo (pide la ruta) |
+| `Ctrl+T` | Buscador difuso de archivos del proyecto — escribí parte del nombre y `Enter` lo abre |
+| `Ctrl+K` | Comentar / descomentar las líneas que toca la selección |
+| `Ctrl+U` | Empezar a grabar una macro, o terminarla si ya se está grabando |
+| `Ctrl+B` | Repetir la última macro grabada |
 | `Ctrl+W` | Cerrar el buffer activo (pregunta si hay cambios sin guardar) |
 | `Ctrl+PageDown` / `Ctrl+PageUp` | Siguiente / anterior buffer |
 | `Ctrl+L` | Alternar ajuste de línea (partir líneas largas en vez de scroll horizontal) |
@@ -66,10 +72,10 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | Flechas / `Home` / `End` / `PageUp` / `PageDown` | Mover el cursor |
 | `Shift` + cualquiera de las anteriores | Mover extendiendo la selección |
 | Cualquier carácter | Se inserta en el cursor (y reemplaza la selección, si hay una) |
-| `Enter` | Línea nueva, con auto-indentación (copia el espacio en blanco inicial de la línea actual) |
-| `Tab` | Inserta un tabulador. Con una selección que abarca varias líneas, indenta todas esas líneas (y las deja seleccionadas, así se puede repetir) |
+| `Enter` | Línea nueva con auto-indentación: hereda la sangría de la línea actual y suma un nivel si quedaste adentro de algo abierto y sin cerrar. Si el cierre estaba pegado al cursor, baja a su propia línea |
+| `Tab` | Inserta un nivel de indentación — un tabulador, o espacios si `indent_with_spaces` está activo para ese archivo. Con una selección que abarca varias líneas, indenta todas esas líneas (y las deja seleccionadas, así se puede repetir) |
 | `Shift+Tab` | Saca un nivel de indentación de cada línea tocada: un tabulador, o hasta `tab_width` espacios si la línea usa espacios |
-| `Backspace` / `Delete` | Los de siempre |
+| `Backspace` / `Delete` | Los de siempre. Entre un par vacío (`()` con el cursor en el medio), `Backspace` se lleva los dos |
 
 La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplazar (regex)…" — mismo flujo que `Ctrl+F`/`Ctrl+R`, pero el texto se interpreta como expresión regular (sintaxis del crate `regex` de Rust) en vez de texto literal; el reemplazo admite grupos capturados (`$1`, `${nombre}`). No tienen atajo de teclado propio, para no arriesgar un choque con la búsqueda literal.
 
@@ -82,6 +88,7 @@ La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplaza
 | `w` | Seleccionar la palabra bajo/después del cursor (límites de palabra Unicode reales — `don't` es una sola palabra, `café_test` también) |
 | `x` | Seleccionar la línea actual (repetida, extiende una línea más) |
 | `n` | Expandir la selección al nodo de sintaxis que la contiene (repetida, sube un nivel del árbol) |
+| `m` | Saltar al paréntesis, corchete o llave que hace pareja con el de al lado del cursor |
 | `d` | Cortar: borra el rango si hay selección (si no, el carácter siguiente) y lo manda al portapapeles del sistema — se puede pegar después con `p`, o en cualquier otra aplicación |
 | `c` | Cambiar: corta la selección (si hay, igual que `d`) y entra a INSERT |
 | `y` | Copiar la selección al portapapeles del sistema |
@@ -124,7 +131,20 @@ Copiar/cortar/pegar hablan con el portapapeles del sistema operativo — no un r
 
 - **Modo directo**: `Ctrl+C` copia, `Ctrl+X` corta, `Ctrl+V` pega.
 - **Capa modal (NORMAL)**: `y`/`d`/`c`/`p` hacen lo mismo (ver la tabla de arriba).
-- Al pegar, si hay algo en el portapapeles del sistema se usa eso; si no está disponible, se usa un registro interno en memoria — copiar/cortar/pegar dentro de Flint nunca dejan de funcionar, aunque no haya portapapeles del sistema accesible (por ejemplo, sin servidor gráfico).
+- La barra de mensaje dice a dónde fue lo copiado, que no siempre es el mismo lugar (ver abajo).
+
+**Por SSH, sin servidor gráfico.** El portapapeles del sistema necesita X11 o Wayland; en una sesión remota no hay ninguno de los dos, y ahí Flint usa **OSC 52**: una secuencia de escape que le pide a la *terminal* que guarde el texto. Como la terminal es la de la máquina que tenés adelante, copiar dentro de un Flint que corre en un servidor termina en tu portapapeles local. Es lo que `arboard` (y por lo tanto el modo `system`) no puede hacer.
+
+Se elige con `clipboard` en `[options]`:
+
+| Valor | Qué hace |
+|---|---|
+| `auto` (por defecto) | El del sistema; si no hay, la terminal por OSC 52 |
+| `system` | Solo el del sistema |
+| `terminal` | Siempre OSC 52, aunque haya servidor gráfico — lo que se quiere dentro de un contenedor o un `tmux` remoto |
+| `internal` | Ninguno de los dos: solo el registro interno de Flint |
+
+Dos límites, dichos de frente: OSC 52 solo sirve para **copiar**. Leer también está en el estándar, pero casi ninguna terminal lo habilita (dejaría que cualquier programa remoto lea lo que copiaste) y la respuesta llegaría mezclada con las teclas, así que pegar usa el registro interno cuando no hay portapapeles del sistema. Y hay un tope de 64 KiB por copia: más que eso lo cortan las terminales, así que Flint avisa en vez de mandar algo que llegaría a medias.
 
 ## Buffers (varios archivos a la vez)
 
@@ -142,7 +162,9 @@ Flint puede tener varios archivos abiertos al mismo tiempo, cada uno con su prop
 
 Lista todo lo que Flint sabe hacer, con filtro difuso mientras se escribe (no hace falta el nombre exacto ni el orden exacto de las letras). `↑`/`↓` para moverse, `Enter` para ejecutar, `Esc` para cancelar.
 
-Incluye: Guardar, Salir, Buscar (literal y regex), Reemplazar (literal y regex), Deshacer, Rehacer, Saltar al siguiente diagnóstico, Autocompletar, Alternar capa modal, Alternar ajuste de línea, Seleccionar siguiente aparición, Abrir archivo, Siguiente/anterior buffer, Cerrar buffer, cambiar de perfil de teclado (Flint/Vim/Emacs), y cualquier comando que un plugin de Lua haya registrado.
+Incluye: Guardar, Salir, Buscar (literal y regex), Reemplazar (literal y regex), Deshacer, Rehacer, Saltar al siguiente diagnóstico, Autocompletar, Alternar capa modal, Alternar ajuste de línea, Seleccionar siguiente aparición, Abrir archivo, Abrir archivo del proyecto, Ir a la línea, Comentar/descomentar, Saltar al par, Grabar y repetir macro, Siguiente/anterior buffer, Cerrar buffer, cambiar de perfil de teclado (Flint/Vim/Emacs), y cualquier comando que un plugin de Lua haya registrado.
+
+Cada renglón muestra además el **nombre estable** de su acción (`Guardar · save`): es el mismo que se escribe en `[keys]` en `config.toml`, así que la paleta también sirve de referencia para remapear sin salir del editor — y buscar `save` encuentra `Guardar`.
 
 ## Perfiles de teclado
 
@@ -152,9 +174,133 @@ Se eligen con `flint --profile <nombre>` al arrancar, o cambiando en caliente de
 - **`vim`** — igual que Flint, salvo en NORMAL: `u`/`Ctrl+R` deshacen/rehacen como en Vim de verdad, y `x` borra el carácter bajo el cursor en vez de seleccionar la línea. No es una emulación completa: no hay secuencias `dd`/`ciw`, porque el modelo de Flint sigue siendo selección→acción, no verbo+movimiento.
 - **`emacs`** — igual que Flint en NORMAL/INSERT (Emacs no es modal, no había una convención propia que imitar ahí), pero en modo directo: `Ctrl+X Ctrl+S` guarda, `Ctrl+X Ctrl+C` sale (el prefijo de dos teclas más reconocido de Emacs — presionar `Ctrl+X` deja la barra de mensaje en "…" esperando la segunda tecla; cualquier otra tecla cancela la secuencia), `Ctrl+S` busca, `Ctrl+G` cancela.
 
-Hoy no hay forma de definir un perfil propio en un archivo — los tres están fijos en el código (`src/keymap.rs`). Es una limitación conocida, no un bug.
+Los tres perfiles están en el código (`src/keymap.rs`), pero **no hace falta tocarlo para cambiar teclas**: `[keys]` y `[modal_keys]` en `config.toml` se aplican encima del perfil elegido, así que alcanza con nombrar las teclas que querés distintas (ver la sección siguiente).
+
+## Configuración (`config.toml`)
+
+Se carga desde `~/.config/flint/config.toml` si existe, o desde la ruta que le pases con `--config <ruta>`. Todo es opcional: lo que falte se queda en su valor por defecto, y un valor mal escrito se avisa al arrancar y se descarta **solo él** — el resto del archivo se aplica igual. Ver `config.example.toml` en el repositorio para un archivo completo y comentado.
+
+Las banderas de la línea de comandos ganan por encima del archivo, y el archivo por encima de los valores de fábrica.
+
+### `[options]` — lo general
+
+| Clave | Por defecto | Qué hace |
+|---|---|---|
+| `profile` | `"flint"` | Perfil de teclado: `flint`, `vim` o `emacs` |
+| `theme` | — | Ruta del tema; si falta se busca `~/.config/flint/theme.toml` |
+| `tab_width` | `4` | Columnas que ocupa un tabulador **en pantalla** (1 a 16) |
+| `indent_with_spaces` | `false` | Indentar con espacios en vez de un tabulador. Esto **sí** cambia el archivo |
+| `wrap` | `false` | Arrancar con ajuste de línea activado |
+| `trim_trailing_whitespace` | `false` | Sacar los espacios del final de cada línea al guardar |
+| `auto_close_brackets` | `true` | Cerrar solo `(`, `[`, `{`, `"` y `'` |
+| `clipboard` | `"auto"` | A dónde va lo copiado (ver la sección Portapapeles) |
+
+### `[files."patrón"]` — lo mismo, por archivo
+
+Cualquier clave de `[options]` se puede repetir bajo un patrón y vale solo para los archivos que le calcen:
+
+```toml
+[files."*.py"]
+indent_with_spaces = true
+tab_width = 4
+
+[files."src/*.rs"]
+tab_width = 2
+```
+
+El patrón acepta `*` (cualquier cosa, incluso nada) y `?` (exactamente un carácter). Sin `/` se compara contra el **nombre** del archivo; con `/`, contra la ruta entera tal como se escribió al abrirlo. Si dos patrones alcanzan al mismo archivo gana el más largo, que es el más específico de los dos.
+
+### `[keys]` y `[modal_keys]` — las teclas
+
+`[keys]` es la capa directa (y INSERT, que tipea igual); `[modal_keys]` es la capa modal NORMAL. La clave es la combinación y el valor el nombre de la acción:
+
+```toml
+[keys]
+"ctrl+k" = "toggle_comment"
+"ctrl+w" = "none"          # desatar la tecla
+
+[modal_keys]
+"g" = "move_home"
+```
+
+Los modificadores son `ctrl` y `shift`; `alt` todavía no se distingue. Sobre una letra, `shift` va en el propio carácter (`"shift+a"` y `"A"` son la misma tecla). Los nombres de tecla especiales son `space`, `tab`, `enter`, `esc`, `backspace`, `delete`, `home`, `end`, `pageup`, `pagedown` y las cuatro flechas.
+
+`flint --actions` lista todos los nombres de acción; la paleta de comandos muestra el de cada renglón. `"none"` desata la tecla a propósito, y se distingue de un nombre mal escrito: lo primero es una decisión, lo segundo un aviso al arrancar.
+
+`F2` no es remapeable: es el único interruptor global fijo, el que prende y apaga la capa modal.
+
+### `[lsp]` — los servidores de lenguaje
+
+```toml
+[lsp]
+rust = "rust-analyzer"
+python = ["pylsp", "--check-parent-process"]
+```
+
+La clave es el identificador LSP del lenguaje (`rust`, `python`, `json`, `toml`, `markdown`); el valor, el comando solo o como lista si necesita argumentos. Lo que no esté acá usa el servidor que Flint trae de fábrica para ese lenguaje. Agregar un servidor nuevo es un renglón acá, no un cambio de código.
+
+Flint solo sabe **instalar** `rust-analyzer` (es un componente de `rustup`). Para cualquier otro servidor que falte avisa y sigue sin LSP: adivinar el gestor de paquetes de la máquina sería peor que no ofrecer nada.
+
+**Probado con `pylsp`**, además de `rust-analyzer`. Con `pipx install python-lsp-server` (o `apt install python3-pylsp`) y ese renglón en `[lsp]`, un `.py` arranca el servidor, anuncia sincronización incremental y responde autocompletado de `jedi`. Para que además marque errores hacen falta los linters, que no vienen en el paquete base: `pipx inject python-lsp-server pyflakes pycodestyle`.
+
+## Buscador de archivos (`Ctrl+T`)
+
+Escribí parte del nombre y `Enter` abre el archivo en un buffer nuevo — mismo filtro difuso que la paleta, mismas teclas (`↑`/`↓`, `Enter`, `Esc`).
+
+La raíz se busca sola: desde el directorio del archivo abierto se sube mientras haya una marca de proyecto (`.git`, `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, `Makefile`) y se usa la más alta que la tenga, así que abrir `src/main.rs` ofrece el repositorio entero y no solo `src/`. Sin ninguna marca, la raíz es el directorio del propio archivo — en `/etc/hosts` nadie quiere indexar `/`.
+
+Se saltean los archivos y directorios ocultos y los que nunca se editan a mano (`.git`, `target`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`), no se siguen enlaces simbólicos (un enlace hacia arriba sería un recorrido infinito) y hay topes de 20.000 archivos y 12 niveles de profundidad. El índice se arma al abrir el buscador, no al arrancar: así no hay que vigilar el disco y la lista siempre está al día.
+
+## Comentarios (`Ctrl+K`)
+
+Comenta o descomenta las líneas que toca la selección, con el token del lenguaje (`//` en Rust, `#` en Python y TOML). En JSON y Markdown no hace nada y lo dice: JSON no admite comentarios y el único de Markdown es el de HTML, que abre y cierra.
+
+Descomenta solo si **todas** las líneas con texto ya estaban comentadas; con una mezcla, comenta todo — que es lo que uno espera al apretar una vez sobre un bloque a medio comentar. El token entra en la sangría *mínima* del bloque, no en la de cada línea, así que la escalera de indentación de adentro se conserva. Las líneas en blanco se saltean.
+
+## Pares de delimitadores
+
+- **Cierre automático**: escribir `(`, `[`, `{`, `"` o `'` pone también el de cierre y deja el cursor en el medio. Se apaga con `auto_close_brackets = false`.
+- Escribir el cierre que ya está no lo duplica: se pasa por encima.
+- `Backspace` entre un par vacío se lleva los dos.
+- No se cierra pegado a texto (solo si lo que sigue es el borde de la línea, un espacio u otro cierre), ni una comilla en medio de una palabra — un apóstrofo en `don't`, o una vida de Rust, no abren una cadena.
+- Con varios cursores se escribe el carácter y nada más: cada cursor tiene su propio contexto y adivinar uno solo para todos daría un texto que nadie pidió.
+- **El par del cursor se resalta** en las dos puntas, y `m` en la capa modal NORMAL (o "Saltar al par" en la paleta) salta de una a la otra.
+
+Los delimitadores que están adentro de una cadena o de un comentario **no cuentan**: eso lo sabe el resaltado, que sale del árbol de tree-sitter. Un `"("` suelto dentro de un texto no descuadra la cuenta, como sí pasa en los editores que solo cuentan caracteres.
+
+## Auto-indentación
+
+`Enter` hereda la sangría de la línea actual, y suma un nivel si el cursor quedó adentro de un delimitador abierto y sin cerrar. Si además el cierre estaba pegado al cursor —lo normal después de escribir `{` con el cierre automático puesto—, el cierre baja a su propia línea y el cursor queda en el medio:
+
+```
+fn main() {|}        →    fn main() {
+                              |
+                          }
+```
+
+En Python, una línea terminada en `:` también abre bloque. En un lenguaje con llaves no, porque ahí un `:` al final es otra cosa.
+
+Los delimitadores que están dentro de una cadena o de un comentario **no cuentan**, igual que en el salto al par: un `"{"` suelto adentro de un texto no sangra la línea siguiente. Es la misma información del árbol de tree-sitter, y es lo que un editor que solo cuenta caracteres no puede distinguir.
+
+Con varios cursores se mantiene el comportamiento de siempre —cada línea nueva copia la sangría de la suya— porque cada cursor tiene su propio contexto y adivinar uno solo para todos daría un texto que nadie pidió.
+
+## Macros (`Ctrl+U`, `Ctrl+B`)
+
+`Ctrl+U` empieza a grabar y `Ctrl+U` de nuevo termina; `Ctrl+B` repite lo grabado. Se graba todo lo que pasa por el teclado — los atajos y también lo tipeado —, así que una macro repite exactamente lo que hiciste.
+
+Una grabación vacía se descarta en vez de pisar la macro anterior con nada. Las dos teclas de macro nunca entran en la grabación: la que la termina quedaría adentro, y repetir empezaría a grabar otra.
+
+## Respaldos y cambios en el disco
+
+**Si otro proceso tocó el archivo** mientras estaba abierto (un `git checkout`, un formateador, un `sed -i`), guardar no lo pisa en silencio: pregunta una vez, y `n` deja el disco como está.
+
+**Cada 8 segundos**, si hay algo sin guardar, Flint deja una copia en `~/.local/share/flint/backups/`. El nombre lleva la ruta absoluta con las barras pasadas a `%`, así que dos archivos que se llaman igual en carpetas distintas no se pisan. Al abrir un archivo que tiene un respaldo así, la barra de mensaje lo avisa con la ruta — Flint **no** restaura solo: leer el respaldo y decidir es tuyo.
+
+El respaldo se borra al guardar (lo de disco y lo de pantalla vuelven a coincidir) y al cerrar el buffer: cerrar es una decisión, no una caída. Los respaldos existen para los cortes de luz, no para deshacer un "salir sin guardar".
 
 ## Temas (`theme.toml`)
+
+El tema es solo colores y forma del cursor; todo lo que cambia el comportamiento del editor vive en `config.toml`. La única clave que aparece en los dos es `tab_width`, por compatibilidad con los temas que ya la traían: si `config.toml` la define, esa gana.
 
 Se carga desde `~/.config/flint/theme.toml` si existe, o desde la ruta que le pases con `--theme <ruta>` (que manda por encima de la ubicación por defecto). Sin ninguno de los dos, se usa la paleta ámbar de fábrica. Ver `theme.example.toml` para un ejemplo completo (paleta azul/violeta).
 
@@ -238,7 +384,9 @@ Ver `plugins/ejemplo.lua` para tres comandos reales y completos (insertar la fec
 
 ## Autocompletado (LSP)
 
-`Ctrl+Espacio` pide sugerencias al servidor de lenguaje conectado (hoy, `rust-analyzer` para `.rs`).
+`Ctrl+Espacio` pide sugerencias al servidor de lenguaje conectado (`rust-analyzer` para `.rs` de fábrica, y cualquier otro que se configure en `[lsp]`).
+
+El texto que se inserta sale del primer campo que mande el servidor, en este orden: `textEdit.newText`, `insertText`, y si no hay ninguno, la etiqueta. Cada servidor prefiere uno distinto y el spec dice que `textEdit` gana. Los snippets (`insertTextFormat: 2`) no se expanden: se inserta la etiqueta, que es texto plano, en vez de dejar `${1:nombre}` escrito en el archivo.
 
 **Sin servidor de lenguaje** — un `.txt`, un `.md`, un `.py` — completa con las palabras que ya están escritas en el propio archivo, como `Ctrl+N` en Vim. No distingue mayúsculas (`SERV` encuentra `servidor`) y ordena por cercanía al cursor: lo que escribiste tres líneas más arriba aparece antes que algo del otro extremo del archivo, porque es mucho más probable que sea lo que querés repetir. También es lo que se muestra cuando hay servidor pero no devolvió ninguna sugerencia para esa posición: mejor algo que un "sin sugerencias".
 
@@ -274,10 +422,10 @@ Los atajos con `Ctrl` (guardar, salir, la paleta) siguen funcionando; cualquier 
 | Extensión | Resaltado de sintaxis | Servidor LSP |
 |---|---|---|
 | `.rs` | Sí (tree-sitter) | Sí (`rust-analyzer`, instalación guiada si falta; sincronización incremental si el servidor la anuncia) |
-| `.py` | Sí (tree-sitter) | No |
-| `.json` | Sí (tree-sitter) | No |
-| `.toml` | Sí (tree-sitter) | No |
-| `.md` / `.markdown` | Sí (tree-sitter, dos gramáticas: bloques e inline) | No |
+| `.py` | Sí (tree-sitter) | Con `python = "pylsp"` en `[lsp]` — probado: diagnósticos, autocompletado y sincronización incremental |
+| `.json` | Sí (tree-sitter) | El que se configure en `[lsp]` |
+| `.toml` | Sí (tree-sitter) | El que se configure en `[lsp]` (por ejemplo `taplo`) |
+| `.md` / `.markdown` | Sí (tree-sitter, dos gramáticas: bloques e inline) | El que se configure en `[lsp]` |
 | cualquier otra | No — texto plano | No |
 
 Cualquier extensión no reconocida se edita igual de bien, sin resaltado ni autocompletado — es el comportamiento de "editor de rescate" heredado de la paridad con `nano`.

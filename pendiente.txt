@@ -1,37 +1,35 @@
 Lo que queda por hacer en Flint.
 
-Este archivo se reescribió el 2026-09-05: la mitad de abajo había quedado
-pisada y era ilegible, y varios puntos ya estaban hechos. Cada punto de acá
-se verificó contra el código antes de anotarlo.
+Este archivo se reescribió el 2026-09-10, después de cerrar el bloque
+"Paridad con micro" y los dos puntos que quedaban con más valor por hora.
+Cada punto de acá se verificó contra el código antes de anotarlo.
 
 Medianos:
-1. LSP solo para Rust — Python/JSON/TOML tienen resaltado de sintaxis pero no
-   diagnósticos ni nada que entienda el lenguaje (harían falta pylsp/pyright,
-   etc.). El autocompletado ya no está en esta lista: sin servidor completa
-   con las palabras del propio texto, que en cualquier archivo es mejor que
-   nada, pero sigue sin saber qué es un método ni un tipo.
-2. Perfiles de teclado fijos — solo Flint/Vim/Emacs, hardcodeados en
-   keymap.rs; no se puede definir un perfil propio en un archivo.
-3. Plugins Lua limitados — la API es register_command, status, insert_text,
+1. Plugins Lua limitados — la API es register_command, status, insert_text,
    filename y line_count. No pueden bindear teclas propias, leer o mover la
    selección, tocar el portapapeles, ni definir colores de sintaxis para un
-   lenguaje nuevo.
-4. Tests todavía flacos — ya no son cero (editor.rs y ui.rs cubren la
-   aritmética de columnas y la indentación, y se comprobó que fallan al
-   romper el código a propósito), pero no hay nada que cubra edición,
-   deshacer/rehacer, multi-cursor, búsqueda ni LSP.
-
-Chicos:
-5. El resaltado de sintaxis recalcula todo el documento en vez de reusar el
+   lenguaje nuevo. Ahora hay con qué: el enum Action tiene nombres estables
+   (Action::from_name), así que un plugin podría pedir una acción por nombre
+   sin que la API crezca una función por cada cosa que Flint sabe hacer.
+2. Tests: el hueco cambió de lugar. Hoy hay 72 y cubren columnas,
+   indentación (incluida la automática al apretar Enter), comentarios, pares
+   de delimitadores, recorte al guardar, configuración, respaldos, el parseo
+   de las respuestas de autocompletado y el dibujado en una terminal angosta.
+   Sigue sin cubrirse el ciclo de edición completo: deshacer/rehacer,
+   multi-cursor, búsqueda y reemplazo, y el cliente LSP de punta a punta
+   (eso último se probó a mano contra rust-analyzer y contra pylsp, pero no
+   hay nada automático que lo cuide).
+3. El resaltado de sintaxis recalcula todo el documento en vez de reusar el
    árbol. Se mitigó con un debounce de 120 ms (HIGHLIGHT_DEBOUNCE), pero el
    incremental de verdad de tree-sitter es una reescritura, y hecho a medias
-   deja el árbol corrupto en silencio.
-6. La auto-indentación copia el espacio en blanco de la línea anterior y
-   nada más — no entiende llaves ni paréntesis, que depende del lenguaje.
-7. Homebrew: una fórmula para instalar en macOS/Linux con `brew`. Necesita
+   deja el árbol corrupto en silencio. Es el punto que más se va a notar
+   cuando aparezca un archivo grande de verdad.
+
+Chicos:
+4. Homebrew: una fórmula para instalar en macOS/Linux con `brew`. Necesita
    además decidir si se compila desde fuente en la máquina del usuario o se
    publican binarios de macOS, que hoy no se construyen.
-8. La compilación no es reproducible bit a bit: el .deb que armó el runner
+5. La compilación no es reproducible bit a bit: el .deb que armó el runner
    para la v0.1.3 y el construido en local con el mismo código dan sha256
    distintos (f286f94e… vs e393b718…). Los dos son correctos — cambian el
    toolchain, las rutas embebidas y las fechas — pero para un proyecto que
@@ -39,6 +37,77 @@ Chicos:
    permite a un tercero verificar que el binario sale de ese código y no de
    otra cosa. Se ataca con SOURCE_DATE_EPOCH, --remap-path-prefix y fijar la
    versión del toolchain (rust-toolchain.toml).
+6. La auto-indentación no des-indenta sola al escribir el cierre. Si uno
+   escribe la llave de cierre a mano en una línea ya sangrada, queda un nivel
+   de más; hay que sacarlo con Shift+Tab. Lo mismo con `else` y `elif` en
+   Python. Es lo que falta para que la indentación sea completa, y sale del
+   mismo lugar que el resto (par_de + is_in_string_or_comment).
+7. El autocompletado ignora el *rango* de textEdit y usa solo su newText:
+   reemplaza desde donde se abrió el popup hasta el cursor. Coincide con lo
+   que quiere casi todo servidor, pero uno que pida reemplazar más atrás (un
+   import completo, por ejemplo) quedaría mal aplicado.
+
+Afuera a propósito (no son pendientes, son decisiones):
+- Terminal integrada. micro la tiene y es una fuente conocida de bugs; tmux
+  ya resuelve el problema sin meterlo dentro del editor.
+- Paneles divididos, por ahora. Es la única refactorización grande que queda
+  (ui.rs asume un viewport, y el scroll — row_offset, row_sub_offset,
+  col_offset — vive en el Editor, o sea por buffer). Se decidió el 2026-09-10
+  no hacerla: las pestañas cubren tener varios archivos abiertos, y para ver
+  dos a la vez hay dos Flint en dos paneles de tmux, que cuesta cero. Si
+  alguna vez se hace: dos archivos distintos lado a lado saldrían casi gratis
+  porque cada buffer ya trae su propio scroll; lo que obliga a mover ese
+  estado a una struct de vista es el mismo archivo en dos paneles.
+- Gestor de plugins. Sin comunidad no hay nada que gestionar; los tres
+  directorios de carga alcanzan. Lo que sí falta es ancho de API (punto 2).
+- Los ~130 lenguajes de micro. No se persiguen: se agrega una gramática
+  cuando aparece ese tipo de archivo. Cinco gramáticas con árbol de verdad
+  valen más que ciento treinta con expresiones regulares.
+- Leer el portapapeles por OSC 52. El estándar lo define, pero las terminales
+  lo tienen apagado (dejaría que un programa remoto lea lo que copiaste) y la
+  respuesta llegaría mezclada con las teclas. Pegar usa el registro interno
+  cuando no hay portapapeles del sistema, y eso se documenta.
+
+Donde Flint ya está arriba de micro: el buffer en rope aguanta archivos
+grandes mejor que las líneas en memoria de micro, el cliente LSP es nativo y
+no un plugin de terceros, los delimitadores se cuentan salteando cadenas y
+comentarios porque hay un árbol de verdad detrás, y la capa modal opcional
+con selección estructural no tiene equivalente ahí.
+
+Paridad con micro — lo que se cerró el 2026-09-10:
+- Auto-indentación de verdad al apretar Enter: hereda la sangría, suma un
+  nivel adentro de un delimitador sin cerrar, y baja el cierre a su propia
+  línea si estaba pegado al cursor. En Python los dos puntos abren bloque.
+  Los delimitadores dentro de cadenas y comentarios no cuentan.
+- Probado un servidor LSP que no es rust-analyzer: pylsp sobre Python, con
+  arranque, sync incremental anunciado, diagnósticos (hacen falta los
+  linters: pipx inject python-lsp-server pyflakes pycodestyle) y
+  autocompletado de jedi aceptado desde la lista. De paso se arregló que el
+  texto a insertar ahora sale de textEdit.newText antes que de insertText,
+  que es lo que dice el spec y lo que manda rust-analyzer.
+- Archivo de configuración (src/config.rs, ~/.config/flint/config.toml) con
+  [options], overrides por patrón de archivo ([files."*.py"]), [keys] y
+  [modal_keys] para remapear teclas por nombre de acción, y [lsp] para el
+  comando de cada servidor. Banderas --config y --actions.
+- Tabuladores contra espacios (indent_with_spaces), por archivo.
+- Recorte de espacios al final de línea al guardar (trim_trailing_whitespace).
+- Portapapeles por OSC 52 cuando no hay servidor gráfico (src/clipboard.rs),
+  con modos auto/system/terminal/internal. Base64 propio, sin dependencia.
+- Macros: Ctrl+U graba y termina, Ctrl+B repite. Graba también lo tipeado,
+  porque ahora *toda* tecla pasa por el despachador (Action::InsertChar).
+- Cierre automático de pares, salto al par (m en NORMAL) y resaltado de las
+  dos puntas, salteando los que están dentro de cadenas y comentarios.
+- Comentar/descomentar el bloque con el token del lenguaje (Ctrl+K).
+- Ir a la línea (paleta) y buscador difuso de archivos del proyecto (Ctrl+T),
+  con la raíz detectada por .git/Cargo.toml/package.json/pyproject.toml/
+  go.mod/Makefile.
+- Detección del tipo de archivo por shebang cuando no hay extensión.
+- Aviso antes de pisar un archivo que otro proceso cambió en el disco, y
+  respaldo automático cada 8 s en ~/.local/share/flint/backups/ (se borra al
+  guardar y al cerrar el buffer).
+- Bug arreglado de paso: los popups de autocompletado y de la paleta entraban
+  en pánico en una terminal más angosta que su ancho mínimo (clamp con
+  min > max). Hay un test que dibuja a 1, 8, 14 y 30 columnas.
 
 Hecho desde la versión anterior de este archivo (no volver a anotarlo):
 - Empaquetado .deb (packaging/build-deb.sh).
