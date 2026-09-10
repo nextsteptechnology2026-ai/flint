@@ -32,6 +32,18 @@ trim_trailing_whitespace = false
 # Cerrar solo los paréntesis, corchetes, llaves y comillas. No se cierra
 # pegado a texto ni en medio de una palabra (un apóstrofo sigue siendo un
 # apóstrofo), y Backspace entre un par vacío se lleva los dos.
+#   auto      el portapapeles del sistema, y si no hay (sesión SSH sin
+#             servidor gráfico) la terminal por OSC 52 — la de la máquina
+#             que tenés adelante, que es la que querés
+#   system    solo el del sistema
+#   terminal  siempre la terminal por OSC 52, aunque haya servidor gráfico
+#   internal  ninguno de los dos: solo el registro interno de Flint
+clipboard = "auto"
+
+# Opciones por archivo. El patrón acepta `*` y `?`; sin `/` se compara contra
+# el nombre del archivo, y con `/` contra la ruta entera. Si dos patrones
+# alcanzan al mismo archivo gana el más largo, que es el más específico.
+[files."*.py"]
 indent_with_spaces = true
 tab_width = 4
 

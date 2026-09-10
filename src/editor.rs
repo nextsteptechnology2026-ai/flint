@@ -268,8 +268,9 @@ pub struct Editor {
     /// filas propio, distinto del `row_offset` del texto fuente: el
     /// documento renderizado no tiene las mismas líneas que el original.
     pub preview_offset: usize,
-    /// Registro interno de copiar/pegar propio de Flint (todavía no habla con
-    /// el portapapeles del sistema — ver README).
+    /// Registro interno de copiar/pegar propio de Flint. Es el que se usa
+    /// para pegar cuando no hay portapapeles del sistema disponible, y
+    /// siempre recibe una copia de lo que se copia (ver `clipboard.rs`).
     pub register: Option<String>,
     /// Cada cuántas columnas cae una parada de tabulación al dibujar un `\t`.
     /// Es solo presentación: en el buffer el tabulador sigue siendo un único

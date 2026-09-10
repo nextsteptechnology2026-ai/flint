@@ -1,3 +1,5 @@
+mod clipboard;
+mod config;
 mod editor;
 mod highlight;
 mod markdown;
@@ -141,9 +143,11 @@ struct App {
     /// a resolverlas cuando el tema se recarga en caliente.
     config: config::Config,
     /// `None` si no se pudo abrir el portapapeles del sistema al arrancar
-    /// (sin servidor gráfico, por ejemplo) — ahí copiar/cortar/pegar caen
-    /// solo al registro interno, sin romper nada.
+    /// (sin servidor gráfico, por ejemplo) — ahí copiar sigue saliendo por
+    /// OSC 52 hacia la terminal, y pegar cae al registro interno.
     clipboard: Option<arboard::Clipboard>,
+    /// Qué caminos tiene permitido usar `set_clipboard`, según `[options]`.
+    clipboard_mode: clipboard::Mode,
     /// La vista previa ya renderizada y de qué estado salió
     /// (buffer, versión del contenido, ancho). Renderizar Markdown y
     /// resaltar sus cercos de código es caro comparado con dibujar, así que
@@ -481,6 +485,7 @@ fn main() -> io::Result<()> {
         theme_path: watched_theme_path,
         theme_mtime,
         theme_next_check: Instant::now() + THEME_RELOAD_INTERVAL,
+        clipboard_mode: cfg.clipboard,
         config: cfg,
         clipboard: arboard::Clipboard::new().ok(),
         preview_lines: Vec::new(),
@@ -1247,17 +1252,17 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         Action::SystemCopy => {
             match app.buffers[app.active].ed.selected_text() {
                 Some(text) => {
-                    set_clipboard(app, text);
-                    app.buffers[app.active].ed.status = "Copiado".to_string();
+                    let destino = set_clipboard(app, text);
+                    app.buffers[app.active].ed.status = format!("Copiado {destino}");
                 }
                 None => app.buffers[app.active].ed.status = "Nada seleccionado".to_string(),
             }
         }
         Action::SystemCut => match app.buffers[app.active].ed.selected_text() {
             Some(text) => {
-                set_clipboard(app, text);
+                let destino = set_clipboard(app, text);
                 app.buffers[app.active].ed.delete_selection_action();
-                app.buffers[app.active].ed.status = "Cortado".to_string();
+                app.buffers[app.active].ed.status = format!("Cortado {destino}");
             }
             None => app.buffers[app.active].ed.status = "Nada seleccionado".to_string(),
         },
@@ -1621,11 +1626,12 @@ fn normal_delete(app: &mut App) {
     // en el portapapeles del sistema antes de borrarlo — igual que la `d` de
     // Vim/Kakoune, recuperable con `p` después. Actúa sobre todos los
     // cursores a la vez, nunca es un no-op.
-    if let Some(text) = app.buffers[app.active].ed.text_at_forward_delete_points() {
-        set_clipboard(app, text);
-    }
+    let destino = match app.buffers[app.active].ed.text_at_forward_delete_points() {
+        Some(text) => set_clipboard(app, text),
+        None => "al registro interno".to_string(),
+    };
     app.buffers[app.active].ed.delete_at_each_selection();
-    app.buffers[app.active].ed.status = "Cortado".to_string();
+    app.buffers[app.active].ed.status = format!("Cortado {destino}");
 }
 
 fn normal_change(app: &mut App) {
@@ -1642,8 +1648,8 @@ fn normal_change(app: &mut App) {
 fn normal_yank(app: &mut App) {
     match app.buffers[app.active].ed.selected_text() {
         Some(text) => {
-            set_clipboard(app, text);
-            app.buffers[app.active].ed.status = "Copiado".to_string();
+            let destino = set_clipboard(app, text);
+            app.buffers[app.active].ed.status = format!("Copiado {destino}");
         }
         None => app.buffers[app.active].ed.status = "Nada seleccionado".to_string(),
     }
@@ -1653,23 +1659,62 @@ fn normal_paste(app: &mut App) {
     paste_from_clipboard(app);
 }
 
-/// Guarda `text` en el registro interno y, si hay portapapeles del sistema
-/// disponible, ahí también — así lo que se copia/corta en Flint se puede
-/// pegar en cualquier otra aplicación.
-fn set_clipboard(app: &mut App, text: String) {
-    if let Some(cb) = app.clipboard.as_mut()
-        && let Err(e) = cb.set_text(text.clone())
-    {
-        app.buffers[app.active].ed.status = format!("Copiado (solo interno — el portapapeles del sistema falló: {e})");
+/// Guarda `text` en el registro interno y, según el modo configurado, en el
+/// portapapeles del sistema y/o en el de la terminal (OSC 52).
+///
+/// Devuelve a dónde llegó, en palabras, en vez de escribir el estado: el que
+/// llama tiene que poder decir "Copiado …" o "Cortado …" con el mismo dato.
+/// Antes esta función escribía el estado y el que llamaba lo pisaba una línea
+/// después, así que un fallo del portapapeles no se veía nunca.
+fn set_clipboard(app: &mut App, text: String) -> String {
+    use clipboard::Mode;
+    let modo = app.clipboard_mode;
+    let mut destinos: Vec<&str> = Vec::new();
+    let mut fallo: Option<String> = None;
+
+    if matches!(modo, Mode::Auto | Mode::System) {
+        match app.clipboard.as_mut() {
+            Some(cb) => match cb.set_text(text.clone()) {
+                Ok(()) => destinos.push("al portapapeles del sistema"),
+                Err(e) => fallo = Some(e.to_string()),
+            },
+            None => fallo = Some("no hay portapapeles del sistema en esta sesión".to_string()),
+        }
     }
+
+    // En `auto`, la terminal es el plan B: si el del sistema anduvo no hace
+    // falta molestar a la terminal, y si no anduvo (una sesión SSH sin
+    // display es el caso típico) es el único camino que queda.
+    let por_terminal = modo == Mode::Terminal || (modo == Mode::Auto && destinos.is_empty());
+    if por_terminal {
+        match clipboard::copy_via_terminal(&text) {
+            Ok(()) => destinos.push("al portapapeles de la terminal"),
+            Err(e) => fallo = Some(e),
+        }
+    }
+
     app.buffers[app.active].ed.register = Some(text);
+
+    match (destinos.is_empty(), fallo) {
+        (false, _) => destinos.join(" y "),
+        (true, Some(e)) => format!("solo al registro interno ({e})"),
+        (true, None) => "al registro interno".to_string(),
+    }
 }
 
-/// El texto a pegar: el portapapeles del sistema si está disponible y tiene
-/// algo (así se puede pegar lo copiado en cualquier otra app), si no el
-/// registro interno de Flint.
+/// El texto a pegar: el portapapeles del sistema si el modo lo permite y
+/// tiene algo (así se puede pegar lo copiado en cualquier otra app), si no
+/// el registro interno de Flint.
+///
+/// Con el modo `terminal` no se lee del sistema a propósito: si se eligió la
+/// terminal es porque el portapapeles del sistema no es el que importa, y
+/// leer de él pegaría algo distinto de lo último que se copió. OSC 52 tiene
+/// una consulta para leer, pero casi ninguna terminal la habilita y la
+/// respuesta llegaría mezclada con las teclas.
 fn get_clipboard_text(app: &mut App) -> Option<String> {
-    if let Some(cb) = app.clipboard.as_mut()
+    use clipboard::Mode;
+    if matches!(app.clipboard_mode, Mode::Auto | Mode::System)
+        && let Some(cb) = app.clipboard.as_mut()
         && let Ok(text) = cb.get_text()
         && !text.is_empty()
     {

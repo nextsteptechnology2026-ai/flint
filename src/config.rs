@@ -64,6 +64,14 @@ pub struct Config {
     /// Patrón → opciones, ordenados de patrón más corto a más largo, que es
     /// el orden en que se aplican (ver `options_for`).
     per_file: Vec<(String, RawOptions)>,
+    /// A dónde va lo que se copia. Es una decisión de la máquina entera, no
+    /// de cada archivo, así que se lee solo de `[options]`.
+    pub clipboard: clipboard::Mode,
+    /// Identificador de lenguaje LSP → comando y argumentos del servidor.
+    pub lsp: BTreeMap<String, Vec<String>>,
+    pub keys: Vec<KeyBinding>,
+}
+
 /// El archivo como lo entiende serde: todo opcional.
 #[derive(Deserialize, Default)]
 struct RawConfig {
@@ -83,6 +91,7 @@ struct RawConfig {
 struct RawOptions {
     profile: Option<String>,
     theme: Option<String>,
+    clipboard: Option<String>,
     tab_width: Option<usize>,
     indent_with_spaces: Option<bool>,
     wrap: Option<bool>,
