@@ -275,6 +275,12 @@ pub struct Editor {
     /// Es solo presentación: en el buffer el tabulador sigue siendo un único
     /// carácter, igual que en el archivo.
     pub tab_width: usize,
+    /// Si al indentar se escriben `tab_width` espacios en vez de un `\t`.
+    /// Esto sí cambia el archivo, al revés que `tab_width` — por eso son dos
+    /// cosas separadas y no una sola.
+    pub indent_with_spaces: bool,
+    /// Si al guardar se recortan los espacios del final de cada línea.
+    pub trim_on_save: bool,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     last_edit_kind: Option<EditKind>,
@@ -361,6 +367,8 @@ impl Editor {
             preview_offset: 0,
             register: None,
             tab_width: DEFAULT_TAB_WIDTH,
+            indent_with_spaces: false,
+            trim_on_save: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_edit_kind: None,
@@ -492,6 +500,11 @@ impl Editor {
     }
 
     pub fn save(&mut self) -> io::Result<()> {
+        // Antes de escribir, no después: lo que se guarda y lo que queda en
+        // pantalla tienen que ser el mismo texto.
+        if self.trim_on_save {
+            self.trim_trailing_whitespace();
+        }
         let path = self
             .filename
             .clone()
@@ -1177,10 +1190,30 @@ impl Editor {
         lines
     }
 
-    /// Suma un nivel de indentación (un `\t`) al principio de cada línea que
-    /// toquen las selecciones, y las conserva — así se puede apretar Tab
-    /// varias veces seguidas sobre el mismo bloque, en vez de perder la
-    /// selección en la primera.
+    /// Un nivel de indentación tal como se escribe en el archivo: un
+    /// tabulador, o `tab_width` espacios si el archivo (o la configuración
+    /// para él) los prefiere.
+    pub fn indent_unit(&self) -> String {
+        if self.indent_with_spaces {
+            " ".repeat(self.tab_width.max(1))
+        } else {
+            "\t".to_string()
+        }
+    }
+
+    /// Inserta un nivel de indentación donde está cada cursor — lo que hace
+    /// Tab cuando no hay un bloque de varias líneas seleccionado.
+    pub fn insert_indent(&mut self) {
+        let unidad = self.indent_unit();
+        self.edit_all_selections(EditKind::Insert, move |_, start, end| {
+            (start, end, unidad.clone())
+        });
+    }
+
+    /// Suma un nivel de indentación al principio de cada línea que toquen las
+    /// selecciones, y las conserva — así se puede apretar Tab varias veces
+    /// seguidas sobre el mismo bloque, en vez de perder la selección en la
+    /// primera.
     pub fn indent_lines(&mut self) {
         let lines = self.lines_touched();
         if lines.is_empty() {
@@ -1188,11 +1221,13 @@ impl Editor {
         }
         self.checkpoint(EditKind::Other);
         let mut sels = self.selections_snapshot();
+        let unidad = self.indent_unit();
+        let ancho = unidad.chars().count();
         // De abajo hacia arriba: insertar en una línea no corre los índices
         // de carácter de las que están más arriba.
         for &line in lines.iter().rev() {
             let at = self.rope.line_to_char(line);
-            self.rope.insert_char(at, '\t');
+            self.rope.insert(at, &unidad);
         }
         for sel in &mut sels {
             for p in [&mut sel.anchor, &mut sel.cursor] {
@@ -1200,12 +1235,47 @@ impl Editor {
                 // de una selección de líneas enteras, y correrla dejaría el
                 // bloque seleccionado a partir del segundo carácter.
                 if p.col > 0 && lines.binary_search(&p.line).is_ok() {
-                    p.col += 1;
+                    p.col += ancho;
                 }
             }
         }
         self.apply_selections(sels);
         self.after_multiline_edit();
+    }
+
+    /// Saca los espacios y tabuladores del final de cada línea. Devuelve si
+    /// tocó algo, para que quien llama sepa si hubo edición de verdad (y no
+    /// gaste un paso de deshacer ni marque el buffer sucio si no la hubo).
+    /// Se usa al guardar, donde el cursor puede quedar más allá del final de
+    /// su línea: por eso al terminar se reencuadran todas las selecciones.
+    pub fn trim_trailing_whitespace(&mut self) -> bool {
+        let recortes: Vec<(usize, usize)> = (0..self.line_count())
+            .filter_map(|line| {
+                let len = self.line_char_len(line);
+                let slice = self.rope.line(line);
+                let mut n = 0;
+                while n < len {
+                    let c = slice.char(len - 1 - n);
+                    if c == ' ' || c == '\t' {
+                        n += 1;
+                    } else {
+                        break;
+                    }
+                }
+                (n > 0).then_some((line, n))
+            })
+            .collect();
+        if recortes.is_empty() {
+            return false;
+        }
+        self.checkpoint(EditKind::Other);
+        for &(line, n) in recortes.iter().rev() {
+            let fin = self.rope.line_to_char(line) + self.line_char_len(line);
+            self.rope.remove(fin - n..fin);
+        }
+        self.clamp_all_selections();
+        self.after_multiline_edit();
+        true
     }
 
     /// Lo contrario: saca un nivel de indentación de cada línea tocada — un
@@ -1740,6 +1810,49 @@ mod tests {
         e.apply_selections(vec![sel((0, 0), (1, 0))]);
         e.indent_lines();
         assert_eq!(e.rope.to_string(), "\tuno\ndos\ntres\n");
+    }
+
+    #[test]
+    fn indentar_con_espacios_escribe_espacios_y_corre_las_columnas() {
+        let mut e = ed("uno\ndos\n");
+        e.indent_with_spaces = true;
+        e.tab_width = 2;
+        e.apply_selections(vec![sel((0, 1), (1, 3))]);
+        e.indent_lines();
+        assert_eq!(e.rope.to_string(), "  uno\n  dos\n");
+        // Las columnas se corren tanto como se insertó, no de a uno: si no,
+        // la selección quedaría apuntando al medio de la sangría nueva.
+        let s = e.selections_snapshot();
+        assert_eq!((s[0].anchor.col, s[0].cursor.col), (3, 5));
+    }
+
+    #[test]
+    fn des_indentar_deshace_lo_que_indento_con_espacios() {
+        let mut e = ed("uno\n");
+        e.indent_with_spaces = true;
+        e.tab_width = 2;
+        e.apply_selections(vec![sel((0, 0), (0, 3))]);
+        e.indent_lines();
+        e.unindent_lines();
+        assert_eq!(e.rope.to_string(), "uno\n");
+    }
+
+    #[test]
+    fn el_recorte_saca_el_espacio_final_y_deja_el_resto() {
+        let mut e = ed("uno   \n  dos\t\n\ntres\n");
+        assert!(e.trim_trailing_whitespace());
+        assert_eq!(e.rope.to_string(), "uno\n  dos\n\ntres\n");
+        // La segunda pasada no tiene nada que hacer, y decirlo es lo que
+        // evita gastar un paso de deshacer al guardar un archivo ya limpio.
+        assert!(!e.trim_trailing_whitespace());
+    }
+
+    #[test]
+    fn el_recorte_trae_al_cursor_de_vuelta_al_final_de_su_linea() {
+        let mut e = ed("uno    \n");
+        e.apply_selections(vec![sel((0, 7), (0, 7))]);
+        e.trim_trailing_whitespace();
+        assert_eq!(e.cursor.col, 3, "el cursor no puede quedar fuera de la línea");
     }
 
     #[test]

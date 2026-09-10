@@ -136,6 +136,10 @@ struct App {
     /// tema — revisarlo en cada vuelta del loop sería un `stat()` de más
     /// por cada tecla; una vez por segundo alcanza para sentirse "en vivo".
     theme_next_check: Instant,
+    /// La configuración leída al arrancar: hace falta después del arranque
+    /// para resolver las opciones de cada archivo que se abra, y para volver
+    /// a resolverlas cuando el tema se recarga en caliente.
+    config: config::Config,
     /// `None` si no se pudo abrir el portapapeles del sistema al arrancar
     /// (sin servidor gráfico, por ejemplo) — ahí copiar/cortar/pegar caen
     /// solo al registro interno, sin romper nada.
@@ -189,10 +193,14 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Indentar líneas (Tab)", Action::InsertTab),
         ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
     ];
+    // Cada renglón lleva además el nombre estable de su acción: es el mismo
+    // que se escribe en `[keys]` en config.toml, así que la paleta sirve de
+    // referencia para remapear sin salir del editor, y buscar "save"
+    // encuentra "Guardar".
     let mut entries: Vec<PaletteEntry> = items
         .iter()
         .map(|&(label, action)| PaletteEntry {
-            label: label.to_string(),
+            label: format!("{label} · {}", action.name()),
             kind: CommandKind::Builtin(action),
         })
         .collect();
@@ -216,6 +224,8 @@ const HELP_TEXT: &str = concat!(
     "OPCIONES:\n",
     "    --profile <flint|vim|emacs>   Perfil de atajos de teclado (por defecto: flint)\n",
     "    --theme <ruta>                 Archivo de tema .toml (por defecto: ~/.config/flint/theme.toml si existe)\n",
+    "    --config <ruta>                Archivo de configuración .toml (por defecto: ~/.config/flint/config.toml si existe)\n",
+    "    --actions                      Lista los nombres de acción para la sección [keys] y sale\n",
     "    -h, --help                     Muestra esta ayuda y sale\n",
     "    -V, --version                  Muestra la versión y sale\n",
     "\n",
@@ -246,20 +256,45 @@ const HELP_TEXT: &str = concat!(
     "en el repositorio del proyecto.\n",
 );
 
-fn parse_args() -> (Option<PathBuf>, String, Option<PathBuf>) {
-    let mut path = None;
-    let mut profile = "flint".to_string();
-    let mut theme_path = None;
+/// Lo que se pidió desde la línea de comandos. Perfil y tema son `Option`
+/// porque el archivo de configuración también los puede fijar: `None` acá
+/// significa "no lo pidieron por bandera", no "usá el default" — la bandera
+/// gana sobre la configuración, y la configuración sobre el default.
+struct Args {
+    path: Option<PathBuf>,
+    profile: Option<String>,
+    theme: Option<PathBuf>,
+    config: Option<PathBuf>,
+}
+
+fn parse_args() -> Args {
+    let mut out = Args {
+        path: None,
+        profile: None,
+        theme: None,
+        config: None,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--profile" {
             if let Some(v) = args.next() {
-                profile = v;
+                out.profile = Some(v);
             }
         } else if arg == "--theme" {
             if let Some(v) = args.next() {
-                theme_path = Some(PathBuf::from(v));
+                out.theme = Some(PathBuf::from(v));
             }
+        } else if arg == "--config" {
+            if let Some(v) = args.next() {
+                out.config = Some(PathBuf::from(v));
+            }
+        } else if arg == "--actions" {
+            println!("Nombres de acción para [keys] y [modal_keys] en config.toml:");
+            for name in keymap::all_action_names() {
+                println!("    {name}");
+            }
+            println!("\n\"none\" como valor desata la tecla en vez de asignarle una acción.");
+            std::process::exit(0);
         } else if arg == "-h" || arg == "--help" {
             print!("{HELP_TEXT}");
             std::process::exit(0);
@@ -267,17 +302,74 @@ fn parse_args() -> (Option<PathBuf>, String, Option<PathBuf>) {
             println!("flint {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         } else {
-            path = Some(PathBuf::from(arg));
+            out.path = Some(PathBuf::from(arg));
         }
     }
-    (path, profile, theme_path)
+    out
+}
+
+/// Las opciones que le tocan a un archivo: la configuración decide, y lo que
+/// la configuración no menciona sale del tema (el ancho de tabulación) o de
+/// los valores de fábrica.
+fn resolve_options(
+    cfg: &config::Config,
+    theme: &theme::Theme,
+    path: Option<&Path>,
+) -> config::Options {
+    let fallback = config::Options {
+        tab_width: theme.tab_width,
+        ..config::Options::default()
+    };
+    cfg.options_for(path, &fallback)
+}
+
+fn apply_options(ed: &mut Editor, o: &config::Options) {
+    ed.tab_width = o.tab_width;
+    ed.indent_with_spaces = o.indent_with_spaces;
+    ed.wrap = o.wrap;
+    ed.trim_on_save = o.trim_trailing_whitespace;
+    ed.auto_close = o.auto_close_brackets;
+}
+
+/// El comando del servidor de lenguaje: primero lo que diga `[lsp]` en la
+/// configuración, y si no dice nada, el que Flint trae de fábrica para ese
+/// lenguaje. Así agregar un servidor nuevo no toca el código.
+fn lsp_command_for(cfg: &config::Config, lang: &highlight::Lang) -> Option<Vec<String>> {
+    if let Some(cmd) = cfg.lsp_command(lang_id_str(lang)) {
+        return Some(cmd.to_vec());
+    }
+    lang.lsp_command().map(|c| vec![c.to_string()])
 }
 
 fn main() -> io::Result<()> {
-    let (path, profile_name, theme_arg) = parse_args();
-    let mut buffer = Buffer::open(path)?;
+    let args = parse_args();
+    let mut buffer = Buffer::open(args.path)?;
 
-    let keymap = keymap::profile_by_name(&profile_name).unwrap_or_else(|| {
+    // La configuración se lee antes que nada: de ella salen el perfil de
+    // teclado, el tema y las opciones de edición. Las banderas de la línea
+    // de comandos siguen ganando por encima, para poder probar algo distinto
+    // sin editar el archivo.
+    let config_path = args.config.clone().or_else(config::Config::default_path);
+    let (cfg, config_warnings) = match &config_path {
+        Some(p) if p.exists() => config::Config::load(p),
+        _ => (config::Config::default(), Vec::new()),
+    };
+    if let Some(first) = config_warnings.first() {
+        let extra = config_warnings.len() - 1;
+        let cola = if extra > 0 {
+            format!(" (+{extra} aviso(s) más)")
+        } else {
+            String::new()
+        };
+        buffer.ed.status = format!("{} — config: {first}{cola}", buffer.ed.status);
+    }
+
+    let profile_name = args
+        .profile
+        .clone()
+        .or_else(|| cfg.profile.clone())
+        .unwrap_or_else(|| "flint".to_string());
+    let mut keymap = keymap::profile_by_name(&profile_name).unwrap_or_else(|| {
         buffer.ed.status = format!(
             "{} — perfil de teclado desconocido \"{profile_name}\", uso Flint",
             buffer.ed.status
@@ -288,12 +380,29 @@ fn main() -> io::Result<()> {
         buffer.ed.status = format!("{} — perfil de teclado: {}", buffer.ed.status, keymap.name);
     }
 
+    // Los remapeos se aplican sobre el perfil ya armado, así que la
+    // configuración solo tiene que nombrar las teclas que quiere cambiar.
+    for kb in &cfg.keys {
+        if kb.modal {
+            keymap::rebind_normal(&mut keymap, kb.chord, kb.action);
+        } else {
+            keymap::rebind_direct(&mut keymap, kb.chord, kb.action);
+        }
+    }
+    if !cfg.keys.is_empty() {
+        buffer.ed.status = format!("{} · {} tecla(s) remapeada(s)", buffer.ed.status, cfg.keys.len());
+    }
+
     // `--theme <ruta>` explícito manda; si no, `~/.config/flint/theme.toml`
     // si existe; si no hay ninguno, la paleta ámbar de siempre. Si el archivo
     // sí existe, se recuerda su ruta y fecha de modificación para recargarlo
     // en caliente más adelante (ver `check_theme_reload`) — editar
     // `theme.toml` y guardar aplica los cambios sin reabrir Flint.
-    let theme_path = theme_arg.or_else(theme::Theme::default_path);
+    let theme_path = args
+        .theme
+        .clone()
+        .or_else(|| cfg.theme.clone())
+        .or_else(theme::Theme::default_path);
     let mut watched_theme_path: Option<PathBuf> = None;
     let mut theme_mtime: Option<std::time::SystemTime> = None;
     let theme = match theme_path {
@@ -310,7 +419,8 @@ fn main() -> io::Result<()> {
         }
         _ => theme::Theme::default(),
     };
-    buffer.ed.tab_width = theme.tab_width;
+    let opciones = resolve_options(&cfg, &theme, buffer.ed.filename.as_deref());
+    apply_options(&mut buffer.ed, &opciones);
 
     if let Some(l) = &buffer.lang {
         buffer.ed.status = format!("{} — resaltado: {}", buffer.ed.status, l.label());
@@ -349,7 +459,7 @@ fn main() -> io::Result<()> {
 
     let lang = buffer.lang;
     let (lsp_client, doc_uri, lsp_lang_id, lsp_incremental) =
-        setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme);
+        setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme, &cfg);
     buffer.doc_uri = doc_uri;
     buffer.lsp_lang_id = lsp_lang_id;
 
@@ -371,6 +481,7 @@ fn main() -> io::Result<()> {
         theme_path: watched_theme_path,
         theme_mtime,
         theme_next_check: Instant::now() + THEME_RELOAD_INTERVAL,
+        config: cfg,
         clipboard: arboard::Clipboard::new().ok(),
         preview_lines: Vec::new(),
         preview_key: None,
@@ -401,13 +512,16 @@ fn setup_lsp(
     ed: &mut Editor,
     lang: Option<&highlight::Lang>,
     theme: &theme::Theme,
+    cfg: &config::Config,
 ) -> (Option<lsp::LspClient>, Option<String>, Option<&'static str>, bool) {
     let Some(lang) = lang else {
         return (None, None, None, false);
     };
-    let Some(cmd) = lang.lsp_command() else {
+    let Some(partes) = lsp_command_for(cfg, lang) else {
         return (None, None, None, false);
     };
+    let cmd = partes[0].as_str();
+    let cmd_args = &partes[1..];
     let Some(path) = ed.filename.clone() else {
         return (None, None, None, false);
     };
@@ -415,14 +529,14 @@ fn setup_lsp(
     let uri = lsp::file_uri(&path);
     let root = lsp::file_uri(path.parent().unwrap_or(Path::new(".")));
 
-    let mut client = match lsp::LspClient::spawn(cmd) {
+    let mut client = match lsp::LspClient::spawn(cmd, cmd_args) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             if !prompt_install(terminal, ed, cmd, theme) {
                 ed.status = format!("Sin LSP para este archivo (falta {cmd})");
                 return (None, None, None, false);
             }
-            match lsp::LspClient::spawn(cmd) {
+            match lsp::LspClient::spawn(cmd, cmd_args) {
                 Ok(c) => c,
                 Err(e2) => {
                     ed.status = format!("Sigue sin encontrarse {cmd}: {e2}");
@@ -520,6 +634,14 @@ fn prompt_install(
     cmd: &str,
     theme: &theme::Theme,
 ) -> bool {
+    // El único servidor que Flint sabe instalar es rust-analyzer, que viene
+    // como componente de rustup. Para cualquier otro se avisa y se sigue sin
+    // LSP: adivinar el gestor de paquetes de la máquina sería peor que no
+    // ofrecer nada, y este diálogo bloquea el arranque.
+    if cmd != "rust-analyzer" {
+        ed.status = format!("Falta el servidor \"{cmd}\"; instalalo y volvé a abrir el archivo");
+        return false;
+    }
     let install_cmd = "rustup";
     let install_args = ["component", "add", "rust-analyzer"];
     ed.status = format!(
@@ -944,11 +1066,18 @@ fn check_theme_reload(app: &mut App) {
     app.theme_mtime = Some(mtime);
     let (theme, warnings) = theme::Theme::load(path);
     app.theme = theme;
-    // `tab_width` vive en el tema pero lo consume cada buffer al dibujarse,
-    // así que la recarga tiene que empujarlo a todos — si no, un cambio de
-    // ancho solo se vería en los buffers abiertos después de recargar.
-    for b in &mut app.buffers {
-        b.ed.tab_width = app.theme.tab_width;
+    // El ancho de tabulación puede venir del tema, así que recargarlo obliga
+    // a volver a resolver las opciones de cada buffer — si no, el cambio solo
+    // se vería en los archivos abiertos después de la recarga. Se resuelve de
+    // nuevo entero (y no solo el ancho) para que la configuración por archivo
+    // siga ganando sobre el valor del tema.
+    for i in 0..app.buffers.len() {
+        let opciones = resolve_options(
+            &app.config,
+            &app.theme,
+            app.buffers[i].ed.filename.as_deref(),
+        );
+        apply_options(&mut app.buffers[i].ed, &opciones);
     }
     app.buffers[app.active].ed.status = match warnings.first() {
         Some(first) => format!("Tema recargado — {first}"),
@@ -1182,7 +1311,7 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
             if ed.selection_spans_lines() {
                 ed.indent_lines();
             } else {
-                ed.insert_char('\t');
+                ed.insert_indent();
             }
         }
         Action::Unindent => app.buffers[app.active].ed.unindent_lines(),
@@ -1303,7 +1432,8 @@ fn open_file_into_new_buffer(app: &mut App, path_str: String) {
     }
     match Buffer::open(Some(PathBuf::from(trimmed))) {
         Ok(mut new_buf) => {
-            new_buf.ed.tab_width = app.theme.tab_width;
+            let opciones = resolve_options(&app.config, &app.theme, new_buf.ed.filename.as_deref());
+            apply_options(&mut new_buf.ed, &opciones);
             if let Some(l) = &new_buf.lang {
                 new_buf.ed.status = format!("{} — resaltado: {}", new_buf.ed.status, l.label());
             }

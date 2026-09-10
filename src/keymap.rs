@@ -338,3 +338,198 @@ pub fn profile_label(name: &str) -> &'static str {
         _ => "Flint (por defecto)",
     }
 }
+
+/// Nombre estable de cada acción, y la acción de cada nombre. Es la misma
+/// tabla leída en los dos sentidos: un nombre nuevo se agrega una sola vez y
+/// queda disponible tanto para `[keys]` en la configuración como para
+/// cualquier cosa que necesite decir "esta acción" por escrito.
+///
+/// Los nombres son en inglés como el resto de los identificadores del
+/// código, y siguen el mismo estilo que las claves de `theme.toml`.
+fn action_names() -> &'static [(&'static str, Action)] {
+    use Action::*;
+    use self::InsertAt as At;
+    &[
+        ("save", Save),
+        ("quit", Quit),
+        ("search", SearchPrompt),
+        ("replace", ReplacePrompt),
+        ("search_regex", SearchRegexPrompt),
+        ("replace_regex", ReplaceRegexPrompt),
+        ("copy", SystemCopy),
+        ("cut", SystemCut),
+        ("paste", SystemPaste),
+        ("undo", Undo),
+        ("redo", Redo),
+        ("next_diagnostic", JumpDiagnostic),
+        ("complete", TriggerCompletion),
+        ("toggle_modal", ToggleModalLayer),
+        ("select_next_occurrence", SelectNextOccurrence),
+        ("command_palette", CommandPalette),
+        ("open_file", OpenFilePrompt),
+        ("next_buffer", NextBuffer),
+        ("prev_buffer", PrevBuffer),
+        ("close_buffer", CloseBuffer),
+        ("toggle_wrap", ToggleWrap),
+        ("toggle_preview", TogglePreview),
+        ("move_left", MoveLeft(false)),
+        ("select_left", MoveLeft(true)),
+        ("move_right", MoveRight(false)),
+        ("select_right", MoveRight(true)),
+        ("move_up", MoveUp(false)),
+        ("select_up", MoveUp(true)),
+        ("move_down", MoveDown(false)),
+        ("select_down", MoveDown(true)),
+        ("move_home", MoveHome(false)),
+        ("select_home", MoveHome(true)),
+        ("move_end", MoveEnd(false)),
+        ("select_end", MoveEnd(true)),
+        ("page_up", Action::PageUp(false)),
+        ("select_page_up", Action::PageUp(true)),
+        ("page_down", Action::PageDown(false)),
+        ("select_page_down", Action::PageDown(true)),
+        ("newline", InsertNewline),
+        ("backspace", Action::Backspace),
+        ("delete", DeleteForward),
+        ("indent", InsertTab),
+        ("unindent", Unindent),
+        ("select_word", SelectWord),
+        ("select_line", SelectLine),
+        ("expand_selection", ExpandSelection),
+        ("modal_delete", NormalDelete),
+        ("modal_change", NormalChange),
+        ("modal_yank", NormalYank),
+        ("modal_paste", NormalPaste),
+        ("insert", Action::InsertAt(At::SelectionStart)),
+        ("append", Action::InsertAt(At::SelectionEnd)),
+        ("insert_line_start", Action::InsertAt(At::LineStart)),
+        ("append_line_end", Action::InsertAt(At::LineEnd)),
+        ("open_below", OpenBelow),
+        ("open_above", OpenAbove),
+        ("escape", EscapeKey),
+    /// La acción que se llama `name`, o `None` si ese nombre no existe.
+    pub fn from_name(name: &str) -> Option<Action> {
+        let name = name.trim().to_ascii_lowercase();
+        action_names()
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|&(_, a)| a)
+    }
+
+    /// El nombre estable de esta acción — el mismo que se escribe en la
+    /// configuración.
+    pub fn name(self) -> &'static str {
+        action_names()
+            .iter()
+            .find(|(_, a)| *a == self)
+            .map(|&(n, _)| n)
+            .unwrap_or("?")
+    }
+}
+
+/// Todos los nombres de acción, ordenados — para poder listarlos en un aviso
+/// cuando alguien escribe uno que no existe.
+pub fn all_action_names() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = action_names().iter().map(|&(n, _)| n).collect();
+    v.sort_unstable();
+    v
+}
+
+/// Interpreta una combinación escrita a mano ("ctrl+s", "shift+tab", "F"),
+/// como viene de la configuración. Devuelve el porqué cuando no se entiende,
+/// para poder mostrarlo en vez de ignorar la línea en silencio.
+///
+/// Shift sobre una letra no se guarda como modificador: la mayúscula ya está
+/// en el carácter, igual que como llega de la terminal (ver `chord_from_event`),
+/// así que "shift+a" y "A" son la misma tecla.
+pub fn parse_chord(s: &str) -> Result<KeyChord, String> {
+    let mut ctrl = false;
+    let mut shift = false;
+    let partes: Vec<&str> = s.split('+').map(str::trim).collect();
+    // Un "+" suelto ("ctrl++") deja una parte vacía en el medio y la tecla
+    // real es el propio "+": se rearma en vez de rechazarlo.
+    let (mods, tecla) = match partes.split_last() {
+        Some((last, mods)) if !last.is_empty() => (mods, (*last).to_string()),
+        Some((_, mods)) => (mods, "+".to_string()),
+        None => return Err(format!("\"{s}\" está vacío")),
+    };
+
+    for m in mods {
+        match m.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" | "c" => ctrl = true,
+            "shift" | "s" => shift = true,
+            "alt" | "meta" | "super" => {
+                return Err(format!(
+                    "\"{s}\": Flint todavía no distingue el modificador \"{m}\" en el teclado"
+                ));
+            }
+            otro => return Err(format!("\"{s}\": modificador desconocido \"{otro}\"")),
+        }
+    }
+
+    let token = match tecla.to_ascii_lowercase().as_str() {
+        "space" | "espacio" => KeyToken::Char(' '),
+        "tab" => KeyToken::Tab,
+        "enter" | "return" | "intro" => KeyToken::Enter,
+        "esc" | "escape" => KeyToken::Esc,
+        "backspace" => KeyToken::Backspace,
+        "delete" | "del" | "supr" => KeyToken::Delete,
+        "home" | "inicio" => KeyToken::Home,
+        "end" | "fin" => KeyToken::End,
+        "pageup" | "pgup" | "repag" => KeyToken::PageUp,
+        "pagedown" | "pgdn" | "avpag" => KeyToken::PageDown,
+        "left" | "izquierda" => KeyToken::Left,
+        "right" | "derecha" => KeyToken::Right,
+        "up" | "arriba" => KeyToken::Up,
+        "down" | "abajo" => KeyToken::Down,
+        _ => {
+            let mut chars = tecla.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => KeyToken::Char(c),
+                _ => return Err(format!("\"{s}\": no reconozco la tecla \"{tecla}\"")),
+            }
+        }
+    };
+
+    // La mayúscula ya distingue la tecla, así que Shift sobre una letra se
+    // aplica al carácter y no queda como modificador — si no, "shift+a" y
+    // "A" serían dos entradas distintas de la tabla y solo una andaría.
+    if let KeyToken::Char(c) = token {
+        let c = if shift {
+            c.to_uppercase().next().unwrap_or(c)
+        } else {
+            c
+        };
+        return Ok(KeyChord {
+            token: KeyToken::Char(c),
+            ctrl,
+            shift: false,
+        });
+    }
+    Ok(KeyChord { token, ctrl, shift })
+}
+
+/// Reemplaza (o borra, con `None`) lo que cuelga de `chord` en la capa
+/// directa. Un remapeo pisa un prefijo entero si había uno.
+pub fn rebind_direct(map: &mut Keymap, chord: KeyChord, action: Option<Action>) {
+    match action {
+        Some(a) => {
+            map.direct.insert(chord, Binding::Do(a));
+        }
+        None => {
+            map.direct.remove(&chord);
+        }
+    }
+}
+
+/// Lo mismo para la capa modal NORMAL.
+pub fn rebind_normal(map: &mut Keymap, chord: KeyChord, action: Option<Action>) {
+    match action {
+        Some(a) => {
+            map.normal.insert(chord, a);
+        }
+        None => {
+            map.normal.remove(&chord);
+        }
+    }
+}

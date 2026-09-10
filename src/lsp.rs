@@ -107,8 +107,9 @@ fn read_loop(stdout: impl Read, tx: mpsc::Sender<Value>) {
 impl LspClient {
     /// Lanza el proceso del servidor. `Err` normalmente significa "el
     /// comando no existe en el PATH" (`ErrorKind::NotFound`).
-    pub fn spawn(cmd: &str) -> io::Result<LspClient> {
+    pub fn spawn(cmd: &str, args: &[String]) -> io::Result<LspClient> {
         let mut child = Command::new(cmd)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

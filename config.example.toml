@@ -1,0 +1,64 @@
+# Configuración de ejemplo para Flint — todo lo de acá es opcional: lo que
+# falte se queda en su valor por defecto, y un valor mal escrito se avisa al
+# arrancar y se descarta solo él, sin tirar abajo el resto del archivo.
+#
+# Para usarlo:
+#   flint --config config.example.toml archivo.rs
+# o copiarlo a la ubicación por defecto para que se cargue siempre:
+#   mkdir -p ~/.config/flint && cp config.example.toml ~/.config/flint/config.toml
+
+[options]
+# Perfil de atajos: flint, vim o emacs. `--profile` en la línea de comandos
+# gana por encima de esto.
+profile = "flint"
+
+# Tema a usar. Si no está, se busca ~/.config/flint/theme.toml. `--theme`
+# gana por encima.
+# theme = "/home/vos/.config/flint/theme.toml"
+
+# Columnas que ocupa un tabulador en pantalla (1 a 16). No cambia el archivo.
+tab_width = 4
+
+# Si al indentar se escriben espacios en vez de un tabulador. Esto SÍ cambia
+# el archivo, al revés que tab_width.
+indent_with_spaces = false
+
+# Arrancar con ajuste de línea activado (Ctrl+L lo alterna igual).
+wrap = false
+
+# Sacar los espacios del final de cada línea al guardar.
+trim_trailing_whitespace = false
+
+# Cerrar solo los paréntesis, corchetes, llaves y comillas. No se cierra
+# pegado a texto ni en medio de una palabra (un apóstrofo sigue siendo un
+# apóstrofo), y Backspace entre un par vacío se lleva los dos.
+indent_with_spaces = true
+tab_width = 4
+
+[files."*.md"]
+wrap = true
+trim_trailing_whitespace = false
+
+[files."Makefile"]
+indent_with_spaces = false
+
+# Servidores de lenguaje, por identificador LSP del lenguaje. El comando se
+# escribe solo, o como lista si necesita argumentos. Lo que no esté acá usa
+# el servidor que Flint ya trae de fábrica para ese lenguaje (hoy, Rust).
+[lsp]
+rust = "rust-analyzer"
+# python = ["pylsp", "--check-parent-process"]
+# toml = "taplo"
+
+# Remapeo de teclas de la capa directa (y de INSERT, que tipean igual). El
+# nombre de cada acción sale de `flint --actions`, y "none" desata la tecla.
+# F2 no es remapeable: es el interruptor de la capa modal.
+[keys]
+"ctrl+s" = "save"
+"ctrl+k" = "select_line"
+# "ctrl+w" = "none"
+
+# Lo mismo para la capa modal NORMAL (la que se prende con F2).
+[modal_keys]
+"g" = "move_home"
+"G" = "move_end"
