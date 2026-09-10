@@ -279,6 +279,21 @@ fn draw_help(f: &mut Frame, ed: &Editor, area: Rect, theme: &Theme) {
     f.render_widget(p, area);
 }
 
+/// `clamp` con el máximo mandando. `usize::clamp` entra en pánico si
+/// `min > max`, que es justo lo que pasa cuando la terminal es más angosta
+/// que el ancho mínimo que quiere un popup: ahí no hay nada que elegir, el
+/// popup tiene que encogerse a lo que haya. Por eso no alcanza con
+/// `clamp` y hace falta esto.
+trait ClampToFit {
+    fn clamp_to_fit(self, minimo: usize, maximo: usize) -> usize;
+}
+
+impl ClampToFit for usize {
+    fn clamp_to_fit(self, minimo: usize, maximo: usize) -> usize {
+        self.min(maximo).max(minimo.min(maximo))
+    }
+}
+
 fn draw_completion_popup(
     f: &mut Frame,
     text_area: Rect,
@@ -293,7 +308,7 @@ fn draw_completion_popup(
         .map(|(label, detail)| label.chars().count() + detail.as_ref().map_or(0, |d| d.chars().count() + 3))
         .max()
         .unwrap_or(10)
-        .clamp(12, text_area.width.saturating_sub(4) as usize) as u16
+        .clamp_to_fit(12, text_area.width.saturating_sub(4) as usize) as u16
         // +2 los bordes del recuadro, +1 el espacio con el que arranca cada
         // línea (`" {label}"`) — sin contarlo, la etiqueta más larga siempre
         // perdía su último carácter.
@@ -353,7 +368,7 @@ fn draw_palette_popup(f: &mut Frame, text_area: Rect, matches: &[String], select
         .map(|m| m.chars().count())
         .max()
         .unwrap_or(20)
-        .clamp(24, text_area.width.saturating_sub(4) as usize) as u16
+        .clamp_to_fit(24, text_area.width.saturating_sub(4) as usize) as u16
         // Ver el comentario del popup de autocompletado: bordes + el espacio
         // inicial de cada línea.
         + 3;
@@ -1030,6 +1045,60 @@ mod tests {
 
     fn chars(s: &str) -> Vec<char> {
         s.chars().collect()
+    }
+
+    /// Una terminal más angosta que el ancho mínimo de un popup no puede
+    /// tirar abajo el editor. Antes lo hacía: `clamp(12, ancho-4)` con
+    /// `ancho` chico deja `min > max`, que en Rust es pánico.
+    #[test]
+    fn los_popups_no_entran_en_panico_en_una_terminal_angosta() {
+        use crate::editor::{CompletionEntry, Mode, Position};
+        use ratatui::backend::TestBackend;
+
+        for ancho in [1u16, 8, 14, 30] {
+            let mut terminal = ratatui::Terminal::new(TestBackend::new(ancho, 8)).unwrap();
+            let mut e = Editor::open(None).expect("buffer sin archivo");
+            e.mode = Mode::Completion {
+                items: vec![CompletionEntry {
+                    label: "una_sugerencia_larguisima".to_string(),
+                    detail: Some("fn(x: usize) -> usize".to_string()),
+                    insert_text: None,
+                }],
+                selected: 0,
+                trigger: Position { line: 0, col: 0 },
+                prefix: String::new(),
+            };
+            let sugerencias = [(
+                "una_sugerencia_larguisima".to_string(),
+                Some("fn(x: usize) -> usize".to_string()),
+            )];
+            let datos = FrameData {
+                completion_matches: &sugerencias,
+                ..FrameData::default()
+            };
+            terminal
+                .draw(|f| {
+                    draw(f, &mut e, &datos, &Theme::default());
+                })
+                .unwrap();
+
+            let mut terminal = ratatui::Terminal::new(TestBackend::new(ancho, 8)).unwrap();
+            let mut e = Editor::open(None).expect("buffer sin archivo");
+            e.mode = Mode::Palette {
+                query: String::new(),
+                selected: 0,
+            };
+            let opciones = ["Guardar · save".to_string()];
+            let datos = FrameData {
+                palette_matches: &opciones,
+                ..FrameData::default()
+            };
+            terminal
+                .draw(|f| {
+                    draw(f, &mut e, &datos, &Theme::default());
+                })
+                .unwrap();
+        }
     }
 
     #[test]
