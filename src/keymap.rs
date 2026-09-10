@@ -61,6 +61,15 @@ pub enum Action {
     OpenBelow,
     OpenAbove,
     EscapeKey,
+    /// Empezar a grabar una macro, o terminarla si ya se está grabando.
+    MacroRecord,
+    /// Repetir la última macro grabada.
+    MacroPlay,
+    /// Escribir un carácter. No se puede escribir en la configuración (no
+    /// tiene nombre): existe para que *todo* lo que hace una tecla pase por
+    /// el despachador de acciones, que es lo que permite que una macro
+    /// grabe también lo tipeado y no solo los atajos.
+    InsertChar(char),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -193,6 +202,8 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::Char('w')), CloseBuffer);
     d(KeyChord::with_ctrl(T::Char('l')), ToggleWrap);
     d(KeyChord::with_ctrl(T::Char('e')), TogglePreview);
+    d(KeyChord::with_ctrl(T::Char('u')), MacroRecord);
+    d(KeyChord::with_ctrl(T::Char('b')), MacroPlay);
     d(KeyChord::with_ctrl(T::PageDown), NextBuffer);
     d(KeyChord::with_ctrl(T::PageUp), PrevBuffer);
     d(KeyChord::plain(T::Enter), InsertNewline);
@@ -407,6 +418,12 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("open_below", OpenBelow),
         ("open_above", OpenAbove),
         ("escape", EscapeKey),
+        ("record_macro", MacroRecord),
+        ("play_macro", MacroPlay),
+    ]
+}
+
+impl Action {
     /// La acción que se llama `name`, o `None` si ese nombre no existe.
     pub fn from_name(name: &str) -> Option<Action> {
         let name = name.trim().to_ascii_lowercase();

@@ -148,6 +148,12 @@ struct App {
     clipboard: Option<arboard::Clipboard>,
     /// Qué caminos tiene permitido usar `set_clipboard`, según `[options]`.
     clipboard_mode: clipboard::Mode,
+    /// Las acciones que se están grabando, si hay una macro en curso.
+    /// Grabar es acumular lo que pasa por el despachador, así que una macro
+    /// repite exactamente lo mismo que hizo el teclado, tipeo incluido.
+    macro_recording: Option<Vec<Action>>,
+    /// La última macro terminada, lista para repetirse.
+    macro_last: Vec<Action>,
     /// La vista previa ya renderizada y de qué estado salió
     /// (buffer, versión del contenido, ancho). Renderizar Markdown y
     /// resaltar sus cercos de código es caro comparado con dibujar, así que
@@ -196,6 +202,8 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Vista previa de Markdown (^E)", Action::TogglePreview),
         ("Indentar líneas (Tab)", Action::InsertTab),
         ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
+        ("Grabar/terminar macro (^U)", Action::MacroRecord),
+        ("Repetir la macro (^B)", Action::MacroPlay),
     ];
     // Cada renglón lleva además el nombre estable de su acción: es el mismo
     // que se escribe en `[keys]` en config.toml, así que la paleta sirve de
@@ -239,7 +247,8 @@ const HELP_TEXT: &str = concat!(
     "    Ctrl+P  Paleta de comandos      Ctrl+Espacio  Autocompletar (LSP)\n",
     "    Ctrl+G  Siguiente diagnóstico   Ctrl+D  +cursor en la siguiente aparición\n",
     "    Ctrl+C/X/V  Copiar/Cortar/Pegar (portapapeles del sistema)\n",
-    "    Ctrl+L  Alternar ajuste de línea\n",
+    "    Ctrl+L  Alternar ajuste de línea       Ctrl+K  Comentar/descomentar\n",
+    "    Ctrl+U  Grabar/terminar macro          Ctrl+B  Repetir la macro\n",
     "    F2      Activar/desactivar la capa modal (NORMAL/INSERT)\n",
     "    Alt+clic  Agregar un cursor donde se hace clic\n",
     "\n",
@@ -486,6 +495,8 @@ fn main() -> io::Result<()> {
         theme_mtime,
         theme_next_check: Instant::now() + THEME_RELOAD_INTERVAL,
         clipboard_mode: cfg.clipboard,
+        macro_recording: None,
+        macro_last: Vec::new(),
         config: cfg,
         clipboard: arboard::Clipboard::new().ok(),
         preview_lines: Vec::new(),
@@ -1169,7 +1180,7 @@ fn handle_layer_key(app: &mut App, key: KeyEvent, page_size: usize) {
                 if let KeyCode::Char(c) = key.code
                     && !chord.ctrl
                 {
-                    app.buffers[app.active].ed.insert_char(c);
+                    dispatch_action(app, Action::InsertChar(c), page_size);
                 }
             }
         },
@@ -1204,9 +1215,56 @@ fn toggle_modal_layer(app: &mut App) {
 /// seleccionar línea", que `select_line` necesita para decidir si extender
 /// o empezar de nuevo.
 fn dispatch_action(app: &mut App, action: Action, page_size: usize) {
+    // Las dos teclas de macro nunca entran en la grabación: la que la
+    // termina quedaría adentro, y repetir la macro empezaría a grabar otra.
+    if !matches!(action, Action::MacroRecord | Action::MacroPlay)
+        && let Some(grabando) = app.macro_recording.as_mut()
+    {
+        grabando.push(action);
+    }
     let was_select_line = matches!(action, Action::SelectLine);
     execute_action(app, action, page_size);
     app.last_was_select_line = was_select_line;
+}
+
+/// Empieza a grabar, o cierra la grabación en curso y la deja lista para
+/// repetir. Una grabación vacía se descarta: dejarla pisaría la macro
+/// anterior con nada, que nunca es lo que se quiso.
+fn toggle_macro_recording(app: &mut App) {
+    let status = match app.macro_recording.take() {
+        Some(acciones) if acciones.is_empty() => {
+            "Macro vacía, no se guardó nada".to_string()
+        }
+        Some(acciones) => {
+            let n = acciones.len();
+            app.macro_last = acciones;
+            format!("Macro grabada ({n} acción(es)) — ^B la repite")
+        }
+        None => {
+            app.macro_recording = Some(Vec::new());
+            "Grabando macro — ^U termina".to_string()
+        }
+    };
+    app.buffers[app.active].ed.status = status;
+}
+
+/// Repite la última macro. La grabación se aparta mientras corre: si no, una
+/// macro reproducida durante una grabación entraría dos veces (una por la
+/// acción de repetir y otra por cada acción repetida).
+fn play_macro(app: &mut App, page_size: usize) {
+    if app.macro_last.is_empty() {
+        app.buffers[app.active].ed.status = "No hay ninguna macro grabada".to_string();
+        return;
+    }
+    let acciones = std::mem::take(&mut app.macro_last);
+    let grabando = app.macro_recording.take();
+    for &accion in &acciones {
+        execute_action(app, accion, page_size);
+    }
+    app.macro_recording = grabando;
+    app.macro_last = acciones;
+    let n = app.macro_last.len();
+    app.buffers[app.active].ed.status = format!("Macro repetida ({n} acción(es))");
 }
 
 /// El único lugar que sabe qué hace cada `Action` — un perfil de teclado
@@ -1369,6 +1427,8 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
                 };
             }
         }
+        Action::MacroRecord => toggle_macro_recording(app),
+        Action::MacroPlay => play_macro(app, page_size),
         Action::ToggleWrap => {
             let ed = &mut app.buffers[app.active].ed;
             ed.wrap = !ed.wrap;
