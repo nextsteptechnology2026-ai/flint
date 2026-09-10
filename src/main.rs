@@ -1000,24 +1000,8 @@ fn apply_completion(
     });
     let items: Vec<editor::CompletionEntry> = items_val
         .unwrap_or_default()
-        .into_iter()
-        .filter_map(|it| {
-            let label = it.get("label").and_then(Value::as_str)?.to_string();
-            let detail = it
-                .get("detail")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            // `insertTextFormat` 2 = Snippet (`$0`, `${1:nombre}`...) — Flint
-            // no expande snippets, así que en ese caso se ignora `insertText`
-            // y se usa `label` en cambio (mismo comportamiento que ya había).
-            let is_snippet = it.get("insertTextFormat").and_then(Value::as_u64) == Some(2);
-            let insert_text = if is_snippet {
-                None
-            } else {
-                it.get("insertText").and_then(Value::as_str).map(str::to_string)
-            };
-            Some(editor::CompletionEntry { label, detail, insert_text })
-        })
+        .iter()
+        .filter_map(completion_entry_from)
         .take(50)
         .collect();
 
@@ -2245,6 +2229,39 @@ fn trigger_completion(app: &mut App) {
 /// Índices de `items` que coinciden con `prefix` (lo tipeado desde que se
 /// abrió el popup), en el mismo orden de puntaje difuso que usa la paleta de
 /// comandos — reutiliza `fuzzy_score` en vez de un mecanismo aparte.
+/// Una entrada de la lista de autocompletado, tal como la manda el servidor.
+///
+/// Los tres campos de los que puede salir el texto a insertar están en el
+/// spec y cada servidor prefiere uno: `rust-analyzer` suele mandar
+/// `textEdit`, `pylsp` manda `insertText`, y varios mandan solo `label`. Se
+/// prueban en ese orden — `textEdit` es el más específico y el único que el
+/// spec dice que gana sobre los otros.
+fn completion_entry_from(it: &Value) -> Option<editor::CompletionEntry> {
+    let label = it.get("label").and_then(Value::as_str)?.to_string();
+    let detail = it.get("detail").and_then(Value::as_str).map(str::to_string);
+    // `insertTextFormat` 2 = Snippet (`$0`, `${1:nombre}`…) — Flint no
+    // expande snippets, así que ahí se ignora el texto propuesto y se
+    // inserta la etiqueta, que es texto plano.
+    if it.get("insertTextFormat").and_then(Value::as_u64) == Some(2) {
+        return Some(editor::CompletionEntry {
+            label,
+            detail,
+            insert_text: None,
+        });
+    }
+    let insert_text = it
+        .get("textEdit")
+        .and_then(|e| e.get("newText"))
+        .and_then(Value::as_str)
+        .or_else(|| it.get("insertText").and_then(Value::as_str))
+        .map(str::to_string);
+    Some(editor::CompletionEntry {
+        label,
+        detail,
+        insert_text,
+    })
+}
+
 fn filtered_completion_indices(items: &[editor::CompletionEntry], prefix: &str) -> Vec<usize> {
     let mut scored: Vec<(i32, usize)> = items
         .iter()
@@ -2638,5 +2655,58 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             ed.row_offset = ed.row_offset.saturating_sub(3);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Las tres formas en que un servidor dice qué insertar. Las dos
+    /// primeras son respuestas reales, recortadas: `pylsp` (jedi) y
+    /// `rust-analyzer`.
+    #[test]
+    fn el_texto_a_insertar_sale_del_campo_que_mande_cada_servidor() {
+        let pylsp = json!({
+            "label": "pardir",
+            "kind": 5,
+            "detail": "os",
+            "insertText": "pardir",
+            "sortText": "apardir"
+        });
+        let e = completion_entry_from(&pylsp).unwrap();
+        assert_eq!(e.insert_text.as_deref(), Some("pardir"));
+        assert_eq!(e.detail.as_deref(), Some("os"));
+
+        // textEdit gana sobre insertText: es lo que dice el spec, y es lo
+        // que manda rust-analyzer cuando los dos vienen distintos.
+        let con_edit = json!({
+            "label": "push",
+            "insertText": "push",
+            "textEdit": {
+                "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 6}},
+                "newText": "push()"
+            }
+        });
+        assert_eq!(
+            completion_entry_from(&con_edit).unwrap().insert_text.as_deref(),
+            Some("push()")
+        );
+
+        // Solo label: se inserta la etiqueta.
+        let pelado = json!({ "label": "len" });
+        assert_eq!(completion_entry_from(&pelado).unwrap().insert_text, None);
+
+        // Un snippet no se expande: se ignora su texto y queda la etiqueta.
+        let snippet = json!({
+            "label": "println!",
+            "insertTextFormat": 2,
+            "textEdit": { "newText": "println!(\"$1\")" }
+        });
+        assert_eq!(completion_entry_from(&snippet).unwrap().insert_text, None);
+
+        // Sin label no hay entrada posible.
+        assert!(completion_entry_from(&json!({ "detail": "x" })).is_none());
     }
 }
