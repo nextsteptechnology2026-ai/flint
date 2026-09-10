@@ -4,8 +4,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
@@ -172,6 +172,9 @@ pub enum PromptKind {
     /// Número de línea al que saltar, contado desde 1 como lo cuenta la
     /// barra de estado (y como lo escribe cualquier compilador).
     GotoLine,
+    /// El archivo cambió en disco desde que se abrió: confirmar antes de
+    /// pisar lo que haya escrito el otro proceso.
+    OverwriteConfirm { then_quit: bool },
 }
 
 pub enum Mode {
@@ -294,6 +297,12 @@ pub struct Editor {
     /// Si una línea terminada en `:` abre un bloque, como en Python. En un
     /// lenguaje con llaves no, y ahí un `:` al final es otra cosa.
     pub indent_after_colon: bool,
+    /// La fecha de modificación que tenía el archivo la última vez que Flint
+    /// lo leyó o lo escribió. Sirve para darse cuenta de que otro proceso lo
+    /// cambió mientras estaba abierto, antes de pisarlo.
+    pub disk_mtime: Option<SystemTime>,
+    /// Cuándo se escribió el último respaldo, para no escribir uno por tecla.
+    pub last_backup: Option<Instant>,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     last_edit_kind: Option<EditKind>,
@@ -341,8 +350,15 @@ pub enum LspSyncPlan {
     Full,
 }
 
+/// La fecha de modificación de un archivo, o `None` si no existe o no se
+/// puede leer.
+fn mtime_de(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
 impl Editor {
     pub fn open(path: Option<PathBuf>) -> io::Result<Editor> {
+        let disk_mtime = path.as_ref().and_then(|p| mtime_de(p));
         let (rope, filename, status, line_ending) = match path {
             Some(p) => {
                 if p.exists() {
@@ -384,6 +400,8 @@ impl Editor {
             trim_on_save: false,
             auto_close: true,
             indent_after_colon: false,
+            disk_mtime,
+            last_backup: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_edit_kind: None,
@@ -528,8 +546,105 @@ impl Editor {
         for chunk in self.rope.chunks() {
             file.write_all(chunk.as_bytes())?;
         }
+        file.flush()?;
         self.dirty = false;
+        // Lo que hay en disco vuelve a ser lo que Flint tiene, así que la
+        // fecha de referencia se corre y el respaldo deja de hacer falta.
+        self.disk_mtime = mtime_de(&path);
+        self.discard_backup();
         Ok(())
+    }
+
+    /// Si el archivo cambió en disco desde que Flint lo leyó o lo guardó por
+    /// última vez. Un `git checkout`, un formateador o un `sed -i` corriendo
+    /// afuera entran por acá; guardar encima sin avisar borraría ese trabajo.
+    pub fn disk_changed(&self) -> bool {
+        let Some(path) = &self.filename else {
+            return false;
+        };
+        match (mtime_de(path), self.disk_mtime) {
+            (Some(ahora), Some(antes)) => ahora != antes,
+            // Existe ahora y no existía cuando se abrió (o al revés): también
+            // es un cambio de afuera.
+            (a, b) => a.is_some() != b.is_some(),
+        }
+    }
+
+    /// Dónde vive el respaldo de este archivo: un único directorio, con la
+    /// ruta absoluta metida en el nombre (las barras pasadas a `%`) para que
+    /// dos archivos que se llaman igual en carpetas distintas no se pisen.
+    pub fn backup_path(&self) -> Option<PathBuf> {
+        let path = self.filename.as_ref()?;
+        let absoluta = fs::canonicalize(path).unwrap_or_else(|_| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(path)
+        });
+        let plana = absoluta.to_string_lossy().replace(['/', '\\'], "%");
+        let home = std::env::var_os("HOME")?;
+        Some(
+            PathBuf::from(home)
+                .join(".local/share/flint/backups")
+                .join(format!("{plana}.bak")),
+        )
+    }
+
+    /// Escribe el respaldo si hay algo sin guardar y pasó `cada` desde el
+    /// anterior. Devuelve si escribió uno.
+    ///
+    /// Es una copia entera y no un diario de cambios: para un archivo de
+    /// texto es más simple, y lo que se quiere recuperar después de una caída
+    /// es el contenido, no la historia.
+    pub fn write_backup_if_due(&mut self, cada: Duration) -> bool {
+        if !self.dirty {
+            return false;
+        }
+        if self.last_backup.is_some_and(|t| t.elapsed() < cada) {
+            return false;
+        }
+        let Some(destino) = self.backup_path() else {
+            return false;
+        };
+        if let Some(dir) = destino.parent()
+            && fs::create_dir_all(dir).is_err()
+        {
+            return false;
+        }
+        let Ok(mut file) = fs::File::create(&destino) else {
+            return false;
+        };
+        for chunk in self.rope.chunks() {
+            if file.write_all(chunk.as_bytes()).is_err() {
+                return false;
+            }
+        }
+        self.last_backup = Some(Instant::now());
+        true
+    }
+
+    /// Borra el respaldo: ya no hace falta porque lo de disco y lo de
+    /// pantalla coinciden.
+    pub fn discard_backup(&mut self) {
+        if let Some(destino) = self.backup_path() {
+            let _ = fs::remove_file(destino);
+        }
+        self.last_backup = None;
+    }
+
+    /// El respaldo que quedó de una sesión anterior, si puede tener trabajo
+    /// que el archivo no tiene.
+    ///
+    /// Con fechas iguales se avisa igual: guardar borra el respaldo, así que
+    /// si sigue ahí es porque algo quedó sin guardar, y las fechas empatan
+    /// nomás porque el sistema de archivos no distingue tan fino. Avisar de
+    /// más molesta; callarse de más pierde trabajo.
+    pub fn pending_backup(&self) -> Option<PathBuf> {
+        let destino = self.backup_path()?;
+        let respaldo = mtime_de(&destino)?;
+        match self.filename.as_ref().and_then(|p| mtime_de(p)) {
+            Some(archivo) if respaldo < archivo => None,
+            _ => Some(destino),
+        }
     }
 
     pub fn line_count(&self) -> usize {
@@ -2253,6 +2368,58 @@ mod tests {
         e.indent_lines();
         e.unindent_lines();
         assert_eq!(e.rope.to_string(), "uno\n");
+    }
+
+    /// Un archivo de verdad en un directorio temporal propio de cada test,
+    /// porque lo que se prueba acá es justamente la relación con el disco.
+    fn archivo_temporal(nombre: &str, contenido: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("flint-ed-{}-{nombre}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join(nombre);
+        std::fs::write(&ruta, contenido).unwrap();
+        ruta
+    }
+
+    #[test]
+    fn se_nota_cuando_otro_proceso_toco_el_archivo() {
+        let ruta = archivo_temporal("cambia.txt", "uno\n");
+        let mut e = Editor::open(Some(ruta.clone())).unwrap();
+        assert!(!e.disk_changed(), "recién abierto, nada cambió");
+
+        // Otro proceso escribe encima. La fecha tiene que quedar distinta de
+        // la que Flint registró al abrir.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&ruta, "otro\n").unwrap();
+        assert!(e.disk_changed(), "el archivo cambió afuera");
+
+        // Guardar vuelve a poner de acuerdo lo de adentro con lo de afuera.
+        e.dirty = true;
+        e.save().unwrap();
+        assert!(!e.disk_changed());
+        let _ = std::fs::remove_file(ruta);
+    }
+
+    #[test]
+    fn el_respaldo_se_escribe_y_se_borra_al_guardar() {
+        let ruta = archivo_temporal("respaldo.txt", "uno\n");
+        let mut e = Editor::open(Some(ruta.clone())).unwrap();
+        let Some(destino) = e.backup_path() else {
+            return; // sin HOME no hay dónde: nada que probar
+        };
+        let _ = std::fs::remove_file(&destino);
+
+        // Sin cambios sin guardar no hay nada que respaldar.
+        assert!(!e.write_backup_if_due(Duration::ZERO));
+        e.insert_char('x');
+        assert!(e.write_backup_if_due(Duration::ZERO));
+        assert_eq!(std::fs::read_to_string(&destino).unwrap(), e.rope.to_string());
+        // Y mientras el respaldo es más nuevo que el archivo, se avisa.
+        assert!(e.pending_backup().is_some());
+
+        e.save().unwrap();
+        assert!(!destino.exists(), "guardar deja el respaldo sin razón de ser");
+        assert!(e.pending_backup().is_none());
+        let _ = std::fs::remove_file(ruta);
     }
 
     #[test]

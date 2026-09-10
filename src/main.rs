@@ -41,6 +41,10 @@ const HIGHLIGHT_DEBOUNCE: Duration = Duration::from_millis(120);
 /// caliente — un segundo es seguido para sentirse "en vivo" sin convertir
 /// cada vuelta del loop principal en un `stat()`.
 const THEME_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
+/// Cada cuánto se escribe un respaldo de lo que está sin guardar. Es el peor
+/// caso de lo que se puede perder en una caída; más seguido que esto sería
+/// escribir en disco durante el tipeo, que se nota.
+const BACKUP_INTERVAL: Duration = Duration::from_secs(8);
 
 /// Qué hace un renglón de la paleta de comandos al ejecutarse.
 #[derive(Clone, Copy)]
@@ -451,6 +455,13 @@ fn main() -> io::Result<()> {
     if let Some(l) = &buffer.lang {
         buffer.ed.status = format!("{} — resaltado: {}", buffer.ed.status, l.label());
     }
+    if let Some(respaldo) = buffer.ed.pending_backup() {
+        buffer.ed.status = format!(
+            "{} — ATENCIÓN: quedó un respaldo más nuevo que el archivo en {}",
+            buffer.ed.status,
+            respaldo.display()
+        );
+    }
 
     let plugins_dirs = plugins::default_dirs();
     let (plugin_host, plugin_commands, plugin_errors) = plugins::PluginBridge::load(&plugins_dirs);
@@ -734,6 +745,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
         poll_lsp(app);
         sync_lsp_if_needed(app);
         check_theme_reload(app);
+        write_backups(app);
 
         let palette_labels: Vec<String> = match &app.buffers[app.active].ed.mode {
             Mode::Palette { query, .. } => filtered_palette_indices(app, query)
@@ -794,6 +806,15 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
     }
 }
 
+/// Deja en disco una copia de lo que cada buffer tiene sin guardar. Cada
+/// `Editor` decide si le toca (mira si está sucio y cuánto pasó desde el
+/// anterior), así que llamarlo en cada vuelta del bucle no cuesta nada.
+fn write_backups(app: &mut App) {
+    for buf in app.buffers.iter_mut() {
+        buf.ed.write_backup_if_due(BACKUP_INTERVAL);
+    }
+}
+
 /// `ed.should_quit` (que ya maneja todo el flujo de "¿guardar antes de
 /// cerrar?" de `try_quit`/`submit_prompt`, sin cambios) significa acá "cerrar
 /// el buffer activo", no "salir del proceso" — con varios buffers abiertos,
@@ -808,6 +829,10 @@ fn process_pending_quit(app: &mut App) -> bool {
 }
 
 fn close_active_buffer(app: &mut App) {
+    // Cerrar es una decisión, no una caída: el respaldo se va con el buffer.
+    // Si no, la próxima vez que se abra el archivo avisaría de un trabajo que
+    // alguien ya decidió tirar.
+    app.buffers[app.active].ed.discard_backup();
     let buf = &app.buffers[app.active];
     if let (Some(uri), Some(client)) = (buf.doc_uri.clone(), app.lsp.as_mut()) {
         let _ = client.did_close(&uri);
@@ -1546,6 +1571,13 @@ fn open_file_into_new_buffer(app: &mut App, path_str: String) {
             apply_options(&mut new_buf.ed, &opciones);
             if let Some(l) = &new_buf.lang {
                 new_buf.ed.status = format!("{} — resaltado: {}", new_buf.ed.status, l.label());
+            }
+            if let Some(respaldo) = new_buf.ed.pending_backup() {
+                new_buf.ed.status = format!(
+                    "{} — ATENCIÓN: quedó un respaldo más nuevo en {}",
+                    new_buf.ed.status,
+                    respaldo.display()
+                );
             }
             app.buffers.push(new_buf);
             app.active = app.buffers.len() - 1;
@@ -2312,6 +2344,16 @@ fn handle_prompt_key(app: &mut App, key: KeyEvent) {
                     'n' | 'N' => app.buffers[app.active].ed.should_quit = true,
                     _ => app.buffers[app.active].ed.mode = Mode::Prompt { kind, buffer, label },
                 }
+            } else if let PromptKind::OverwriteConfirm { then_quit } = &kind {
+                let then_quit = *then_quit;
+                match c {
+                    's' | 'S' => save_forcing(&mut app.buffers[app.active].ed, then_quit),
+                    'n' | 'N' => {
+                        app.buffers[app.active].ed.status =
+                            "No se guardó; lo del disco quedó como estaba".to_string();
+                    }
+                    _ => app.buffers[app.active].ed.mode = Mode::Prompt { kind, buffer, label },
+                }
             } else {
                 buffer.push(c);
                 app.buffers[app.active].ed.mode = Mode::Prompt { kind, buffer, label };
@@ -2475,7 +2517,7 @@ fn submit_prompt_editor(ed: &mut Editor, kind: PromptKind, buffer: String) {
             Ok(count) => ed.status = format!("{count} reemplazo(s) hecho(s)"),
             Err(e) => ed.status = format!("Regex inválida: {e}"),
         },
-        PromptKind::QuitConfirm => {
+        PromptKind::QuitConfirm | PromptKind::OverwriteConfirm { .. } => {
             ed.status = "Cancelado".to_string();
         }
         PromptKind::OpenFile | PromptKind::SaveAs { .. } => {
@@ -2484,17 +2526,36 @@ fn submit_prompt_editor(ed: &mut Editor, kind: PromptKind, buffer: String) {
     }
 }
 
+/// Guarda sin volver a preguntar por el disco — es la rama del "sí" de
+/// `OverwriteConfirm`, y también el camino normal cuando no hubo cambios
+/// afuera.
+fn save_forcing(ed: &mut Editor, then_quit: bool) {
+    match ed.save() {
+        Ok(()) => {
+            ed.status = "Guardado".to_string();
+            if then_quit {
+                ed.should_quit = true;
+            }
+        }
+        Err(e) => ed.status = format!("Error al guardar: {e}"),
+    }
+}
+
 fn try_save(ed: &mut Editor, then_quit: bool) {
     if ed.filename.is_some() {
-        match ed.save() {
-            Ok(()) => {
-                ed.status = "Guardado".to_string();
-                if then_quit {
-                    ed.should_quit = true;
-                }
-            }
-            Err(e) => ed.status = format!("Error al guardar: {e}"),
+        // Otro proceso pudo haber tocado el archivo mientras estaba abierto
+        // (un `git checkout`, un formateador). Guardar encima sin avisar
+        // borraría eso, así que se pregunta una vez.
+        if ed.disk_changed() {
+            ed.mode = Mode::Prompt {
+                kind: PromptKind::OverwriteConfirm { then_quit },
+                buffer: String::new(),
+                label: "El archivo cambió en el disco. ¿Guardar igual y pisarlo? (s = sí, n = no): "
+                    .to_string(),
+            };
+            return;
         }
+        save_forcing(ed, then_quit);
     } else {
         ed.mode = Mode::Prompt {
             kind: PromptKind::SaveAs { then_quit },
