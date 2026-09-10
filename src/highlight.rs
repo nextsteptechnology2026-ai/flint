@@ -26,6 +26,20 @@ impl Lang {
         }
     }
 
+    /// Cómo se escribe un comentario de una línea en este lenguaje. `None`
+    /// donde el lenguaje no tiene: JSON no los admite (comentar una línea
+    /// rompería el archivo) y en Markdown el único comentario es el de HTML,
+    /// que abre y cierra, así que no entra en "poner un token adelante".
+    pub fn line_comment(&self) -> Option<&'static str> {
+        match self {
+            Lang::Rust => Some("//"),
+            Lang::Python | Lang::Toml => Some("#"),
+            Lang::Json | Lang::Markdown => None,
+        }
+    }
+
+    }
+
     /// Comando del servidor LSP para este lenguaje, si Flint sabe de uno.
     pub fn lsp_command(&self) -> Option<&'static str> {
         match self {

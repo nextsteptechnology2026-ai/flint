@@ -61,6 +61,8 @@ pub enum Action {
     OpenBelow,
     OpenAbove,
     EscapeKey,
+    /// Comentar o descomentar las líneas de la selección.
+    ToggleComment,
     /// Empezar a grabar una macro, o terminarla si ya se está grabando.
     MacroRecord,
     /// Repetir la última macro grabada.
@@ -202,6 +204,7 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::Char('w')), CloseBuffer);
     d(KeyChord::with_ctrl(T::Char('l')), ToggleWrap);
     d(KeyChord::with_ctrl(T::Char('e')), TogglePreview);
+    d(KeyChord::with_ctrl(T::Char('k')), ToggleComment);
     d(KeyChord::with_ctrl(T::Char('u')), MacroRecord);
     d(KeyChord::with_ctrl(T::Char('b')), MacroPlay);
     d(KeyChord::with_ctrl(T::PageDown), NextBuffer);
@@ -418,6 +421,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("open_below", OpenBelow),
         ("open_above", OpenAbove),
         ("escape", EscapeKey),
+        ("toggle_comment", ToggleComment),
         ("record_macro", MacroRecord),
         ("play_macro", MacroPlay),
     ]

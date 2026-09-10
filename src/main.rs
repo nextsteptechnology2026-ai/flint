@@ -202,6 +202,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Vista previa de Markdown (^E)", Action::TogglePreview),
         ("Indentar líneas (Tab)", Action::InsertTab),
         ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
+        ("Comentar/descomentar líneas (^K)", Action::ToggleComment),
         ("Grabar/terminar macro (^U)", Action::MacroRecord),
         ("Repetir la macro (^B)", Action::MacroPlay),
     ];
@@ -1429,6 +1430,7 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         }
         Action::MacroRecord => toggle_macro_recording(app),
         Action::MacroPlay => play_macro(app, page_size),
+        Action::ToggleComment => toggle_comment(app),
         Action::ToggleWrap => {
             let ed = &mut app.buffers[app.active].ed;
             ed.wrap = !ed.wrap;
@@ -1713,6 +1715,25 @@ fn normal_yank(app: &mut App) {
         }
         None => app.buffers[app.active].ed.status = "Nada seleccionado".to_string(),
     }
+}
+
+/// Comentar es lo único de la edición que necesita saber en qué lenguaje
+/// está el archivo, así que vive acá (donde el buffer conoce su `Lang`) y no
+/// en el editor, que trabaja con texto a secas.
+fn toggle_comment(app: &mut App) {
+    let buf = &mut app.buffers[app.active];
+    let Some(token) = buf.lang.and_then(|l| l.line_comment()) else {
+        buf.ed.status = match buf.lang {
+            Some(l) => format!("{} no tiene comentarios de una línea", l.label()),
+            None => "No sé en qué lenguaje está este archivo".to_string(),
+        };
+        return;
+    };
+    buf.ed.status = if buf.ed.toggle_line_comment(token) {
+        format!("Comentario alternado con \"{token}\"")
+    } else {
+        "No hay líneas con texto para comentar".to_string()
+    };
 }
 
 fn normal_paste(app: &mut App) {

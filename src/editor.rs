@@ -1244,6 +1244,85 @@ impl Editor {
         self.after_multiline_edit();
     }
 
+    /// Comenta o descomenta las líneas que toquen las selecciones, con el
+    /// token de una línea del lenguaje (`//`, `#`, …). Descomenta solo si
+    /// **todas** las líneas con texto ya estaban comentadas; si hay una
+    /// mezcla, comenta todo — que es lo que uno espera al apretar una vez
+    /// sobre un bloque a medio comentar.
+    ///
+    /// El token entra en la sangría *mínima* del bloque y no en la de cada
+    /// línea, así que la escalera de indentación de adentro se conserva.
+    /// Devuelve si tocó algo: las líneas en blanco no cuentan, y un bloque
+    /// entero en blanco no gasta un paso de deshacer.
+    pub fn toggle_line_comment(&mut self, token: &str) -> bool {
+        let con_texto: Vec<usize> = self
+            .lines_touched()
+            .into_iter()
+            .filter(|&l| self.rope.line(l).chars().any(|c| !c.is_whitespace()))
+            .collect();
+        if con_texto.is_empty() {
+            return false;
+        }
+        let n_token = token.chars().count();
+        let comentadas = con_texto.iter().all(|&l| {
+            let sangria = Self::leading_whitespace(&self.rope, l).chars().count();
+            self.rope
+                .line(l)
+                .chars()
+                .skip(sangria)
+                .take(n_token)
+                .eq(token.chars())
+        });
+
+        self.checkpoint(EditKind::Other);
+        let mut sels = self.selections_snapshot();
+        // (línea, columna donde se editó, cuánto se corrió con signo).
+        let mut cambios: Vec<(usize, usize, isize)> = Vec::new();
+
+        if comentadas {
+            // De abajo hacia arriba, como en indent_lines: editar una línea
+            // no corre los índices de carácter de las de más arriba.
+            for &l in con_texto.iter().rev() {
+                let sangria = Self::leading_whitespace(&self.rope, l).chars().count();
+                // Se saca también el espacio que se puso al comentar, si
+                // sigue ahí — si no, descomentar dejaría un margen que crece
+                // con cada vuelta.
+                let con_espacio = self.rope.line(l).chars().nth(sangria + n_token) == Some(' ');
+                let n = n_token + usize::from(con_espacio);
+                let inicio = self.rope.line_to_char(l) + sangria;
+                self.rope.remove(inicio..inicio + n);
+                cambios.push((l, sangria, -(n as isize)));
+            }
+        } else {
+            let col = con_texto
+                .iter()
+                .map(|&l| Self::leading_whitespace(&self.rope, l).chars().count())
+                .min()
+                .unwrap_or(0);
+            let texto = format!("{token} ");
+            let n = texto.chars().count() as isize;
+            for &l in con_texto.iter().rev() {
+                let at = self.rope.line_to_char(l) + col;
+                self.rope.insert(at, &texto);
+                cambios.push((l, col, n));
+            }
+        }
+
+        for sel in &mut sels {
+            for p in [&mut sel.anchor, &mut sel.cursor] {
+                if let Some(&(_, col, delta)) = cambios.iter().find(|&&(l, _, _)| l == p.line)
+                    && p.col >= col
+                {
+                    p.col = p.col.saturating_add_signed(delta);
+                }
+            }
+        }
+        self.apply_selections(sels);
+        self.clamp_all_selections();
+        self.after_multiline_edit();
+        true
+    }
+
     /// Saca los espacios y tabuladores del final de cada línea. Devuelve si
     /// tocó algo, para que quien llama sepa si hubo edición de verdad (y no
     /// gaste un paso de deshacer ni marque el buffer sucio si no la hubo).
@@ -1836,6 +1915,47 @@ mod tests {
         e.indent_lines();
         e.unindent_lines();
         assert_eq!(e.rope.to_string(), "uno\n");
+    }
+
+    #[test]
+    fn comentar_usa_la_sangria_minima_del_bloque() {
+        let mut e = ed("fn f() {\n    let x = 1;\n        let y = 2;\n}\n");
+        e.apply_selections(vec![sel((1, 0), (2, 5))]);
+        assert!(e.toggle_line_comment("//"));
+        // El token entra a la altura de la línea menos sangrada, así que la
+        // escalera de adentro del bloque se conserva.
+        assert_eq!(
+            e.rope.to_string(),
+            "fn f() {\n    // let x = 1;\n    //     let y = 2;\n}\n"
+        );
+    }
+
+    #[test]
+    fn descomentar_deja_el_texto_como_estaba() {
+        let mut e = ed("    // uno\n    // dos\n");
+        e.apply_selections(vec![sel((0, 0), (1, 5))]);
+        assert!(e.toggle_line_comment("//"));
+        assert_eq!(e.rope.to_string(), "    uno\n    dos\n");
+    }
+
+    #[test]
+    fn un_bloque_a_medio_comentar_se_comenta_entero() {
+        let mut e = ed("// uno\ndos\n");
+        e.apply_selections(vec![sel((0, 0), (1, 3))]);
+        e.toggle_line_comment("//");
+        assert_eq!(e.rope.to_string(), "// // uno\n// dos\n");
+    }
+
+    #[test]
+    fn comentar_saltea_las_lineas_en_blanco() {
+        let mut e = ed("uno\n\ndos\n");
+        e.apply_selections(vec![sel((0, 0), (2, 3))]);
+        e.toggle_line_comment("#");
+        assert_eq!(e.rope.to_string(), "# uno\n\n# dos\n");
+        // Y una selección de puro blanco no gasta un paso de deshacer.
+        let mut vacio = ed("\n\n");
+        vacio.apply_selections(vec![sel((0, 0), (1, 0))]);
+        assert!(!vacio.toggle_line_comment("#"));
     }
 
     #[test]
