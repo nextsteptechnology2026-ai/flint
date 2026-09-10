@@ -285,6 +285,8 @@ pub struct Editor {
     pub indent_with_spaces: bool,
     /// Si al guardar se recortan los espacios del final de cada línea.
     pub trim_on_save: bool,
+    /// Si escribir `(`, `[`, `{`, `"` o `'` agrega también el de cierre.
+    pub auto_close: bool,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     last_edit_kind: Option<EditKind>,
@@ -373,6 +375,7 @@ impl Editor {
             tab_width: DEFAULT_TAB_WIDTH,
             indent_with_spaces: false,
             trim_on_save: false,
+            auto_close: true,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_edit_kind: None,
@@ -1247,6 +1250,241 @@ impl Editor {
         self.after_multiline_edit();
     }
 
+    /// Cierre automático de pares. El de comillas está en la misma tabla
+    /// porque se escribe igual, aunque abre y cierra con el mismo carácter.
+    pub fn closing_for(c: char) -> Option<char> {
+        match c {
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '{' => Some('}'),
+            '"' => Some('"'),
+            '\'' => Some('\''),
+            _ => None,
+        }
+    }
+
+    fn opening_for(c: char) -> Option<char> {
+        match c {
+            ')' => Some('('),
+            ']' => Some('['),
+            '}' => Some('{'),
+            _ => None,
+        }
+    }
+
+    /// El carácter que está justo después del cursor, si hay alguno en esa
+    /// misma línea.
+    fn char_after_cursor(&self) -> Option<char> {
+        let linea = self.rope.line(self.cursor.line);
+        (self.cursor.col < self.line_char_len(self.cursor.line)).then(|| linea.char(self.cursor.col))
+    }
+
+    fn char_before_cursor(&self) -> Option<char> {
+        (self.cursor.col > 0).then(|| self.rope.line(self.cursor.line).char(self.cursor.col - 1))
+    }
+
+    /// Escribe `c` con el cierre automático puesto, si corresponde. Devuelve
+    /// qué pasó, para poder contarlo en la barra de estado si hiciera falta.
+    ///
+    /// Con varios cursores se escribe el carácter y nada más: cada cursor
+    /// tiene su propio contexto (uno puede estar antes de un `)` y otro no)
+    /// y adivinar uno solo para todos daría un texto que nadie pidió.
+    pub fn insert_char_pairing(&mut self, c: char) {
+        if !self.auto_close || !self.secondary.is_empty() || self.selection_anchor.is_some() {
+            self.insert_char(c);
+            return;
+        }
+        let siguiente = self.char_after_cursor();
+
+        // Escribir el cierre que ya está puesto no duplica: se pasa por
+        // encima, que es lo que uno quiere después de tipear adentro del par.
+        if Self::opening_for(c).is_some() && siguiente == Some(c) {
+            self.move_right(false);
+            return;
+        }
+        let Some(cierre) = Self::closing_for(c) else {
+            self.insert_char(c);
+            return;
+        };
+        // Una comilla en medio de una palabra es un apóstrofo (o una vida de
+        // Rust), no el principio de una cadena.
+        if cierre == c
+            && self
+                .char_before_cursor()
+                .is_some_and(|p| p.is_alphanumeric() || p == '_')
+        {
+            self.insert_char(c);
+            return;
+        }
+        // Solo se cierra cuando lo que sigue es el borde de la línea, un
+        // espacio o el cierre de otro par: pegado a texto, el cierre nuevo
+        // quedaría en el medio de algo que ya estaba escrito.
+        let hay_lugar = match siguiente {
+            None => true,
+            Some(s) => s.is_whitespace() || Self::opening_for(s).is_some(),
+        };
+        if !hay_lugar {
+            self.insert_char(c);
+            return;
+        }
+        let mut texto = String::with_capacity(2);
+        texto.push(c);
+        texto.push(cierre);
+        self.edit_all_selections(EditKind::Insert, move |_, start, end| {
+            (start, end, texto.clone())
+        });
+        self.move_left(false);
+    }
+
+    /// Si el cursor está justo entre un par vacío (`()` con el cursor en el
+    /// medio), borra los dos. Devuelve si lo hizo.
+    pub fn backspace_pair(&mut self) -> bool {
+        if !self.auto_close || !self.secondary.is_empty() || self.selection_anchor.is_some() {
+            return false;
+        }
+        let (Some(antes), Some(despues)) = (self.char_before_cursor(), self.char_after_cursor())
+        else {
+            return false;
+        };
+        if Self::closing_for(antes) != Some(despues) {
+            return false;
+        }
+        self.delete_forward();
+        self.backspace();
+        true
+    }
+
+    /// La posición del paréntesis, corchete o llave que hace pareja con el
+    /// que está en `pos` (o justo antes, que es donde queda el cursor después
+    /// de escribirlo). `None` si ahí no hay ninguno, o si no tiene pareja.
+    ///
+    /// Los que están dentro de una cadena o de un comentario no cuentan: eso
+    /// lo sabe el resaltado, que viene del árbol de tree-sitter, así que un
+    /// `"("` suelto adentro de un texto no descuadra la cuenta como sí pasa
+    /// en los editores que solo cuentan caracteres.
+    pub fn matching_bracket(&self, pos: Position) -> Option<Position> {
+        self.bracket_pair_at(pos).map(|(_, destino)| destino)
+    }
+
+    /// Igual que `matching_bracket`, pero devuelve las dos puntas: el
+    /// delimitador que se tomó como punto de partida y su pareja. Es lo que
+    /// necesita el dibujado para resaltar los dos a la vez.
+    pub fn bracket_pair_at(&self, pos: Position) -> Option<(Position, Position)> {
+        let en = |p: Position| -> Option<char> {
+            (p.col < self.line_char_len(p.line)).then(|| self.rope.line(p.line).char(p.col))
+        };
+        // Se prueba primero el carácter bajo el cursor y después el de atrás:
+        // al terminar de escribir `foo()` el cursor queda después del `)`, y
+        // ahí es donde uno espera que el salto funcione.
+        let (inicio, c) = match en(pos).and_then(|c| Self::par_de(c).map(|_| (pos, c))) {
+            Some(x) => x,
+            None => {
+                let antes = Position { line: pos.line, col: pos.col.checked_sub(1)? };
+                let c = en(antes)?;
+                Self::par_de(c)?;
+                (antes, c)
+            }
+        };
+        if self.is_in_string_or_comment(inicio) {
+            return None;
+        }
+        let (objetivo, hacia_adelante) = Self::par_de(c)?;
+        let destino = self.scan_for_bracket(inicio, c, objetivo, hacia_adelante)?;
+        Some((inicio, destino))
+    }
+
+    /// El par de un delimitador y hacia dónde hay que buscarlo.
+    fn par_de(c: char) -> Option<(char, bool)> {
+        match c {
+            '(' => Some((')', true)),
+            '[' => Some((']', true)),
+            '{' => Some(('}', true)),
+            ')' => Some(('(', false)),
+            ']' => Some(('[', false)),
+            '}' => Some(('{', false)),
+            _ => None,
+        }
+    }
+
+    /// Si esa posición cae adentro de una cadena o un comentario según el
+    /// último resaltado calculado. Sin resaltado (lenguaje desconocido, o
+    /// todavía sin calcular) contesta que no: contar de más es mejor que
+    /// ignorar delimitadores de verdad.
+    fn is_in_string_or_comment(&self, pos: Position) -> bool {
+        let Some(rangos) = self.highlights_by_line.get(pos.line) else {
+            return false;
+        };
+        rangos.iter().any(|&(desde, hasta, kind)| {
+            matches!(kind, HighlightKind::String | HighlightKind::Comment)
+                && (desde..hasta).contains(&pos.col)
+        })
+    }
+
+    /// Recorre el documento contando anidamiento hasta encontrar la pareja.
+    /// El tope de caracteres evita que un archivo enorme con un delimitador
+    /// suelto convierta cada pulsación en un recorrido completo.
+    fn scan_for_bracket(
+        &self,
+        desde: Position,
+        abre: char,
+        cierra: char,
+        hacia_adelante: bool,
+    ) -> Option<Position> {
+        const MAX_PASOS: usize = 500_000;
+        let mut nivel = 0i32;
+        let mut pos = desde;
+        for _ in 0..MAX_PASOS {
+            pos = if hacia_adelante {
+                self.next_position(pos)?
+            } else {
+                self.prev_position(pos)?
+            };
+            let linea = self.rope.line(pos.line);
+            if pos.col >= self.line_char_len(pos.line) {
+                continue;
+            }
+            let c = linea.char(pos.col);
+            if (c == abre || c == cierra) && !self.is_in_string_or_comment(pos) {
+                if c == abre {
+                    nivel += 1;
+                } else if nivel == 0 {
+                    return Some(pos);
+                } else {
+                    nivel -= 1;
+                }
+            }
+        }
+        None
+    }
+
+    fn next_position(&self, pos: Position) -> Option<Position> {
+        if pos.col < self.line_char_len(pos.line) {
+            return Some(Position { line: pos.line, col: pos.col + 1 });
+        }
+        (pos.line + 1 < self.line_count()).then_some(Position { line: pos.line + 1, col: 0 })
+    }
+
+    fn prev_position(&self, pos: Position) -> Option<Position> {
+        if pos.col > 0 {
+            return Some(Position { line: pos.line, col: pos.col - 1 });
+        }
+        pos.line.checked_sub(1).map(|line| Position {
+            line,
+            col: self.line_char_len(line),
+        })
+    }
+
+    /// Lleva el cursor al delimitador que hace pareja con el de al lado.
+    pub fn jump_to_matching_bracket(&mut self) -> bool {
+        let Some(destino) = self.matching_bracket(self.cursor) else {
+            return false;
+        };
+        self.cursor = destino;
+        self.selection_anchor = None;
+        self.secondary.clear();
+        true
+    }
+
     /// Comenta o descomenta las líneas que toquen las selecciones, con el
     /// token de una línea del lenguaje (`//`, `#`, …). Descomenta solo si
     /// **todas** las líneas con texto ya estaban comentadas; si hay una
@@ -1928,6 +2166,93 @@ mod tests {
         e.indent_lines();
         e.unindent_lines();
         assert_eq!(e.rope.to_string(), "uno\n");
+    }
+
+    #[test]
+    fn el_par_se_encuentra_en_las_dos_direcciones() {
+        let e = ed("fn f(a: (u8, u8)) {}\n");
+        // Desde el `(` de la firma hasta su cierre, salteando el par de
+        // adentro.
+        assert_eq!(
+            e.matching_bracket(Position { line: 0, col: 4 }),
+            Some(Position { line: 0, col: 16 })
+        );
+        // Y al revés, parándose sobre el de cierre.
+        assert_eq!(
+            e.matching_bracket(Position { line: 0, col: 16 }),
+            Some(Position { line: 0, col: 4 })
+        );
+        // Justo después de escribir el cierre, el cursor queda una columna
+        // más allá y el salto tiene que seguir funcionando.
+        assert_eq!(
+            e.matching_bracket(Position { line: 0, col: 17 }),
+            Some(Position { line: 0, col: 4 })
+        );
+        assert_eq!(e.matching_bracket(Position { line: 0, col: 1 }), None);
+    }
+
+    #[test]
+    fn el_par_cruza_lineas() {
+        let mut e = ed("fn f() {\n    x\n}\n");
+        e.goto_line(0);
+        assert_eq!(
+            e.matching_bracket(Position { line: 0, col: 7 }),
+            Some(Position { line: 2, col: 0 })
+        );
+    }
+
+    #[test]
+    fn los_delimitadores_adentro_de_una_cadena_no_cuentan() {
+        let mut e = ed("f(\"(\", x)\n");
+        // Sin saber qué es una cadena, el `(` de adentro descuadra la cuenta
+        // y no se encuentra pareja.
+        assert_eq!(e.matching_bracket(Position { line: 0, col: 1 }), None);
+        // Con el resaltado puesto (que es lo que hay en cuanto tree-sitter
+        // corre), el de adentro se ignora y aparece el cierre de verdad.
+        e.highlights_by_line = vec![vec![(2, 5, HighlightKind::String)]];
+        assert_eq!(
+            e.matching_bracket(Position { line: 0, col: 1 }),
+            Some(Position { line: 0, col: 8 })
+        );
+    }
+
+    #[test]
+    fn el_cierre_automatico_pone_el_par_y_deja_el_cursor_adentro() {
+        let mut e = ed("");
+        e.insert_char_pairing('(');
+        assert_eq!(e.rope.to_string(), "()");
+        assert_eq!(e.cursor.col, 1);
+        // Escribir el cierre que ya está no lo duplica: se pasa por encima.
+        e.insert_char_pairing(')');
+        assert_eq!(e.rope.to_string(), "()");
+        assert_eq!(e.cursor.col, 2);
+    }
+
+    #[test]
+    fn el_cierre_automatico_no_se_mete_en_medio_de_una_palabra() {
+        let mut e = ed("hola\n");
+        e.cursor = Position { line: 0, col: 0 };
+        e.insert_char_pairing('(');
+        assert_eq!(e.rope.to_string(), "(hola\n", "pegado a texto no se cierra");
+
+        // Un apóstrofo en medio de una palabra tampoco abre una comilla.
+        let mut e = ed("dont\n");
+        e.cursor = Position { line: 0, col: 4 };
+        e.insert_char_pairing('\'');
+        assert_eq!(e.rope.to_string(), "dont'\n");
+    }
+
+    #[test]
+    fn backspace_entre_un_par_vacio_se_lleva_los_dos() {
+        let mut e = ed("");
+        e.insert_char_pairing('[');
+        assert!(e.backspace_pair());
+        assert_eq!(e.rope.to_string(), "");
+        // Con algo adentro ya no es un par vacío: Backspace borra una sola
+        // cosa, como siempre.
+        e.insert_char_pairing('[');
+        e.insert_char('x');
+        assert!(!e.backspace_pair());
     }
 
     #[test]

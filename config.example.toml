@@ -32,6 +32,9 @@ trim_trailing_whitespace = false
 # Cerrar solo los paréntesis, corchetes, llaves y comillas. No se cierra
 # pegado a texto ni en medio de una palabra (un apóstrofo sigue siendo un
 # apóstrofo), y Backspace entre un par vacío se lleva los dos.
+auto_close_brackets = true
+
+# A dónde va lo que se copia:
 #   auto      el portapapeles del sistema, y si no hay (sesión SSH sin
 #             servidor gráfico) la terminal por OSC 52 — la de la máquina
 #             que tenés adelante, que es la que querés

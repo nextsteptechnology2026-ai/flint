@@ -477,6 +477,7 @@ fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
     }
 
     let all_sels = ed.selections_snapshot();
+    let par_de_llaves = ed.bracket_pair_at(ed.cursor);
     let line_count = ed.line_count();
     let mut lines: Vec<Line> = Vec::with_capacity(visible_rows.max(1));
 
@@ -514,6 +515,13 @@ fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
         // resaltado en su propio color — el cursor real de la terminal solo
         // puede estar en un lugar (el de la primaria).
         let mut sel_overlays: Vec<(usize, usize, Style)> = Vec::new();
+        // El par del cursor va primero para que una selección encima lo
+        // tape: cuando hay texto seleccionado, lo que importa es el rango.
+        for pos in par_de_llaves.iter().flat_map(|&(a, b)| [a, b]) {
+            if pos.line == line_idx && pos.col < chars.len() {
+                sel_overlays.push((pos.col, pos.col + 1, estilo_par(theme)));
+            }
+        }
         for (idx, sel) in all_sels.iter().enumerate() {
             let Some((s, e)) = selection_cols_on_line(sel, line_idx, chars.len()) else {
                 continue;
@@ -637,6 +645,7 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
     ed.col_offset = 0;
 
     let all_sels = ed.selections_snapshot();
+    let par_de_llaves = ed.bracket_pair_at(ed.cursor);
     let mut lines: Vec<Line> = Vec::with_capacity(visible_rows.max(1));
     let mut cursor_screen: Option<(u16, u16)> = None;
     let mut row = 0usize;
@@ -659,6 +668,13 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
         let chars: Vec<char> = content.chars().collect();
 
         let mut sel_overlays: Vec<(usize, usize, Style)> = Vec::new();
+        // El par del cursor va primero para que una selección encima lo
+        // tape: cuando hay texto seleccionado, lo que importa es el rango.
+        for pos in par_de_llaves.iter().flat_map(|&(a, b)| [a, b]) {
+            if pos.line == line_idx && pos.col < chars.len() {
+                sel_overlays.push((pos.col, pos.col + 1, estilo_par(theme)));
+            }
+        }
         for (idx, sel) in all_sels.iter().enumerate() {
             let Some((s, e)) = selection_cols_on_line(sel, line_idx, chars.len()) else {
                 continue;
@@ -907,6 +923,16 @@ impl<'a> LineCells<'a> {
             self.cells.partition_point(|c| c.src < e),
         )
     }
+}
+
+/// Cómo se pintan las dos puntas del par que rodea al cursor. Sale del tema
+/// (los colores de la barra, invertidos) para que se distinga de una
+/// selección y de un cursor secundario sin inventar una paleta aparte.
+fn estilo_par(theme: &Theme) -> Style {
+    Style::default()
+        .fg(theme.bar_bg)
+        .bg(theme.bar_fg)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn build_line_spans(

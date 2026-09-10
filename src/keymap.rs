@@ -65,6 +65,8 @@ pub enum Action {
     ToggleComment,
     /// Preguntar a qué línea saltar.
     GotoLinePrompt,
+    /// Saltar al delimitador que hace pareja con el de al lado del cursor.
+    JumpMatchingBracket,
     /// Empezar a grabar una macro, o terminarla si ya se está grabando.
     MacroRecord,
     /// Repetir la última macro grabada.
@@ -255,6 +257,7 @@ fn base_normal() -> HashMap<KeyChord, Action> {
     m.insert(KeyChord::plain(Char('w')), SelectWord);
     m.insert(KeyChord::plain(Char('x')), SelectLine);
     m.insert(KeyChord::plain(Char('n')), ExpandSelection);
+    m.insert(KeyChord::plain(Char('m')), JumpMatchingBracket);
     m.insert(KeyChord::plain(Char('d')), NormalDelete);
     m.insert(KeyChord::plain(Char('c')), NormalChange);
     m.insert(KeyChord::plain(Char('y')), NormalYank);
@@ -424,6 +427,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("open_above", OpenAbove),
         ("escape", EscapeKey),
         ("toggle_comment", ToggleComment),
+        ("jump_matching_bracket", JumpMatchingBracket),
         ("goto_line", GotoLinePrompt),
         ("record_macro", MacroRecord),
         ("play_macro", MacroPlay),

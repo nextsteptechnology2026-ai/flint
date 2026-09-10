@@ -203,6 +203,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Indentar líneas (Tab)", Action::InsertTab),
         ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
         ("Comentar/descomentar líneas (^K)", Action::ToggleComment),
+        ("Saltar al paréntesis/llave que hace pareja", Action::JumpMatchingBracket),
         ("Ir a la línea…", Action::GotoLinePrompt),
         ("Grabar/terminar macro (^U)", Action::MacroRecord),
         ("Repetir la macro (^B)", Action::MacroPlay),
@@ -1366,7 +1367,15 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         Action::PageUp(extend) => app.buffers[app.active].ed.move_page_up(page_size, extend),
         Action::PageDown(extend) => app.buffers[app.active].ed.move_page_down(page_size, extend),
         Action::InsertNewline => app.buffers[app.active].ed.insert_newline(),
-        Action::Backspace => app.buffers[app.active].ed.backspace(),
+        // Entre un par vacío, Backspace se lleva los dos: es el par que puso
+        // el cierre automático, así que deshacerlo con una sola tecla es lo
+        // que uno espera.
+        Action::Backspace => {
+            let ed = &mut app.buffers[app.active].ed;
+            if !ed.backspace_pair() {
+                ed.backspace();
+            }
+        }
         Action::DeleteForward => app.buffers[app.active].ed.delete_forward(),
         // Con una selección de varias líneas, Tab indenta el bloque en vez de
         // reemplazarlo por un tabulador — que es lo que haría cualquier otra
@@ -1428,6 +1437,15 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
                     "Vista previa desactivada".to_string()
                 };
             }
+        }
+        Action::InsertChar(c) => app.buffers[app.active].ed.insert_char_pairing(c),
+        Action::JumpMatchingBracket => {
+            let ed = &mut app.buffers[app.active].ed;
+            ed.status = if ed.jump_to_matching_bracket() {
+                "Al par".to_string()
+            } else {
+                "El cursor no está en un paréntesis, corchete o llave con pareja".to_string()
+            };
         }
         Action::MacroRecord => toggle_macro_recording(app),
         Action::MacroPlay => play_macro(app, page_size),

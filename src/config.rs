@@ -36,6 +36,10 @@ pub struct Options {
     pub wrap: bool,
     /// Sacar los espacios del final de cada línea al guardar.
     pub trim_trailing_whitespace: bool,
+    /// Cerrar solo los paréntesis, corchetes, llaves y comillas.
+    pub auto_close_brackets: bool,
+}
+
 impl Default for Options {
     fn default() -> Self {
         Options {
@@ -43,6 +47,11 @@ impl Default for Options {
             indent_with_spaces: false,
             wrap: false,
             trim_trailing_whitespace: false,
+            auto_close_brackets: true,
+        }
+    }
+}
+
 /// Un remapeo del archivo de configuración. `action: None` significa
 /// "desatar esta tecla": queda sin hacer nada en vez de volver al default.
 pub struct KeyBinding {
@@ -96,6 +105,29 @@ struct RawOptions {
     indent_with_spaces: Option<bool>,
     wrap: Option<bool>,
     trim_trailing_whitespace: Option<bool>,
+    auto_close_brackets: Option<bool>,
+}
+
+/// El comando de un servidor se puede escribir como `"pylsp"` o como
+/// `["pylsp", "--check-parent-process"]` — la segunda forma es la única que
+/// permite pasarle argumentos, y la primera es la que se quiere escribir el
+/// noventa por ciento de las veces.
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+enum RawCommand {
+    Simple(String),
+    WithArgs(Vec<String>),
+}
+
+impl RawCommand {
+    fn into_parts(self) -> Vec<String> {
+        match self {
+            RawCommand::Simple(s) => vec![s],
+            RawCommand::WithArgs(v) => v,
+        }
+    }
+}
+
 impl Config {
     /// Ruta por defecto: `~/.config/flint/config.toml`, al lado del tema.
     pub fn default_path() -> Option<PathBuf> {
