@@ -66,6 +66,27 @@ pub fn lang_for_name(nombre: &str) -> Option<Lang> {
     }
 }
 
+/// El lenguaje que declara un shebang, para los archivos sin extensión —
+/// un script llamado `deploy` a secas no tiene de dónde sacarlo si no es de
+/// su primera línea.
+///
+/// Entiende tanto `#!/usr/bin/python3` como `#!/usr/bin/env python3 -u`, y
+/// le saca la versión al nombre (`python3.11` → `python`) porque el número
+/// cambia con la máquina y el lenguaje no.
+pub fn lang_for_first_line(line: &str) -> Option<Lang> {
+    let resto = line.trim_start().strip_prefix("#!")?;
+    let mut palabras = resto.split_whitespace();
+    let primero = palabras.next()?;
+    let mut nombre = Path::new(primero).file_name()?.to_str()?;
+    // `env` no es el intérprete: es quien lo busca en el PATH. El de verdad
+    // es la primera palabra siguiente que no sea una opción de `env`.
+    if nombre == "env" {
+        nombre = palabras.find(|p| !p.starts_with('-'))?;
+    }
+    let base = nombre.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    lang_for_name(base)
+}
+
 pub fn lang_for_path(path: &Path) -> Option<Lang> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -381,6 +402,29 @@ pub fn expand_selection(tree: &tree_sitter::Tree, start_byte: usize, end_byte: u
         node
     };
     Some((target.start_byte(), target.end_byte()))
+}
+
+#[cfg(test)]
+mod tests_shebang {
+    use super::*;
+
+    fn nombre(l: Option<Lang>) -> Option<&'static str> {
+        l.map(|l| l.label())
+    }
+
+    #[test]
+    fn el_shebang_dice_el_lenguaje_cuando_no_hay_extension() {
+        assert_eq!(nombre(lang_for_first_line("#!/usr/bin/python3")), Some("Python"));
+        assert_eq!(
+            nombre(lang_for_first_line("#!/usr/bin/env python3 -u")),
+            Some("Python")
+        );
+        assert_eq!(nombre(lang_for_first_line("#!/usr/bin/env -S python3")), Some("Python"));
+        assert_eq!(nombre(lang_for_first_line("#!/bin/sh")), None);
+        // Sin shebang no hay nada que adivinar.
+        assert_eq!(nombre(lang_for_first_line("import os")), None);
+        assert_eq!(nombre(lang_for_first_line("")), None);
+    }
 }
 
 #[cfg(test)]

@@ -76,7 +76,16 @@ struct Buffer {
 impl Buffer {
     fn open(path: Option<PathBuf>) -> io::Result<Buffer> {
         let ed = Editor::open(path)?;
-        let lang = ed.filename.as_ref().and_then(|p| highlight::lang_for_path(p));
+        // Primero la extensión, que es barata y no se equivoca; si el archivo
+        // no tiene (un script llamado `deploy` a secas), lo dice su shebang.
+        let lang = ed
+            .filename
+            .as_ref()
+            .and_then(|p| highlight::lang_for_path(p))
+            .or_else(|| {
+                let primera: String = ed.rope.line(0).chars().take(200).collect();
+                highlight::lang_for_first_line(&primera)
+            });
         let highlighter = lang.as_ref().and_then(highlight::LanguageHighlighter::new);
         let mut ed = ed;
         // Lo que depende del lenguaje y no de la configuración del usuario
