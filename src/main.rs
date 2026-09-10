@@ -74,6 +74,10 @@ impl Buffer {
         let ed = Editor::open(path)?;
         let lang = ed.filename.as_ref().and_then(|p| highlight::lang_for_path(p));
         let highlighter = lang.as_ref().and_then(highlight::LanguageHighlighter::new);
+        let mut ed = ed;
+        // Lo que depende del lenguaje y no de la configuración del usuario
+        // se fija acá, donde el lenguaje recién se conoce.
+        ed.indent_after_colon = lang.is_some_and(|l| l.indents_after_colon());
         Ok(Buffer {
             ed,
             lang,
@@ -2178,6 +2182,7 @@ fn redetect_language(app: &mut App, idx: usize, path: &Path) {
     app.buffers[idx].lsp_synced_version = 0;
     app.buffers[idx].highlighter = new_lang.as_ref().and_then(highlight::LanguageHighlighter::new);
     app.buffers[idx].lang = new_lang;
+    app.buffers[idx].ed.indent_after_colon = new_lang.is_some_and(|l| l.indents_after_colon());
     app.buffers[idx].ed.highlights_dirty = true;
     if let Some(l) = &app.buffers[idx].lang {
         app.buffers[idx].ed.status = format!("{} — resaltado: {}", app.buffers[idx].ed.status, l.label());

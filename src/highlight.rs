@@ -38,6 +38,9 @@ impl Lang {
         }
     }
 
+    /// Si en este lenguaje una línea terminada en `:` abre un bloque.
+    pub fn indents_after_colon(&self) -> bool {
+        matches!(self, Lang::Python)
     }
 
     /// Comando del servidor LSP para este lenguaje, si Flint sabe de uno.

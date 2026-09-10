@@ -287,6 +287,9 @@ pub struct Editor {
     pub trim_on_save: bool,
     /// Si escribir `(`, `[`, `{`, `"` o `'` agrega también el de cierre.
     pub auto_close: bool,
+    /// Si una línea terminada en `:` abre un bloque, como en Python. En un
+    /// lenguaje con llaves no, y ahí un `:` al final es otra cosa.
+    pub indent_after_colon: bool,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     last_edit_kind: Option<EditKind>,
@@ -376,6 +379,7 @@ impl Editor {
             indent_with_spaces: false,
             trim_on_save: false,
             auto_close: true,
+            indent_after_colon: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_edit_kind: None,
@@ -1155,12 +1159,91 @@ impl Editor {
     /// que espera casi cualquier editor por defecto. Cada selección calcula
     /// la indentación de *su propia* línea, contra el rope todavía intacto.
     pub fn insert_newline(&mut self) {
+        // Con un solo cursor y sin selección se puede mirar el contexto y
+        // decidir bien. Con varios, cada uno tiene el suyo: ahí se mantiene
+        // el comportamiento de siempre (copiar la sangría de cada línea),
+        // que es correcto para todos y no inventa nada para nadie.
+        if self.secondary.is_empty() && self.selection_anchor.is_none() {
+            self.insert_newline_smart();
+            return;
+        }
         let le = self.line_ending.as_str();
         self.edit_all_selections(EditKind::Other, move |rope, start, end| {
             let line = rope.char_to_line(start.min(rope.len_chars()));
             let indent = Self::leading_whitespace(rope, line);
             (start, end, format!("{le}{indent}"))
         });
+    }
+
+    /// La línea nueva hereda la sangría de la actual y suma un nivel si el
+    /// cursor quedó adentro de algo que se abrió y no se cerró. Si además el
+    /// cierre estaba pegado al cursor, baja a su propia línea y el cursor
+    /// queda en el medio — que es lo que uno quiere después de escribir `{`.
+    fn insert_newline_smart(&mut self) {
+        let le = self.line_ending.as_str().to_string();
+        let base = Self::leading_whitespace(&self.rope, self.cursor.line);
+
+        if !self.opens_block_before(self.cursor) {
+            let texto = format!("{le}{base}");
+            self.edit_all_selections(EditKind::Other, move |_, s, e| (s, e, texto.clone()));
+            return;
+        }
+
+        let adentro = format!("{base}{}", self.indent_unit());
+        let cierre_pegado = self
+            .char_after_cursor()
+            .is_some_and(|c| Self::opening_for(c).is_some());
+
+        if !cierre_pegado {
+            let texto = format!("{le}{adentro}");
+            self.edit_all_selections(EditKind::Other, move |_, s, e| (s, e, texto.clone()));
+            return;
+        }
+
+        let ancho_adentro = adentro.chars().count();
+        let texto = format!("{le}{adentro}{le}{base}");
+        self.edit_all_selections(EditKind::Other, move |_, s, e| (s, e, texto.clone()));
+        // La inserción dejó el cursor al final de todo, o sea en la línea del
+        // cierre; el lugar donde uno va a escribir es la del medio.
+        self.cursor = Position {
+            line: self.cursor.line.saturating_sub(1),
+            col: ancho_adentro,
+        };
+        self.selection_anchor = None;
+    }
+
+    /// Si lo que hay entre el principio de la línea y `pos` deja un bloque
+    /// abierto: un delimitador sin cerrar, o (en Python) un `:` al final.
+    ///
+    /// Los delimitadores dentro de una cadena o un comentario no cuentan,
+    /// igual que en `matching_bracket`: eso lo sabe el árbol de tree-sitter,
+    /// así que un `"{"` adentro de un texto no sangra la línea siguiente.
+    fn opens_block_before(&self, pos: Position) -> bool {
+        let linea = self.rope.line(pos.line);
+        let hasta = pos.col.min(self.line_char_len(pos.line));
+        let mut nivel = 0i32;
+        for col in 0..hasta {
+            let c = linea.char(col);
+            if Self::par_de(c).is_none() {
+                continue;
+            }
+            if self.is_in_string_or_comment(Position { line: pos.line, col }) {
+                continue;
+            }
+            if matches!(c, '(' | '[' | '{') {
+                nivel += 1;
+            } else {
+                nivel -= 1;
+            }
+        }
+        if nivel > 0 {
+            return true;
+        }
+        if self.indent_after_colon {
+            let texto: String = (0..hasta).map(|col| linea.char(col)).collect();
+            return texto.trim_end().ends_with(':');
+        }
+        false
     }
 
     /// ¿Alguna selección abarca más de una línea? Es lo que decide si Tab
@@ -2214,6 +2297,79 @@ mod tests {
             e.matching_bracket(Position { line: 0, col: 1 }),
             Some(Position { line: 0, col: 8 })
         );
+    }
+
+    #[test]
+    fn enter_sangra_adentro_de_una_llave_abierta() {
+        let mut e = ed("fn f() {\n");
+        e.cursor = Position { line: 0, col: 8 };
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "fn f() {\n\t\n");
+        assert_eq!(e.cursor, Position { line: 1, col: 1 });
+    }
+
+    #[test]
+    fn enter_con_el_cierre_pegado_lo_baja_a_su_linea() {
+        let mut e = ed("");
+        e.insert_char_pairing('{');
+        assert_eq!(e.rope.to_string(), "{}");
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "{\n\t\n}");
+        // El cursor queda en la línea del medio, que es donde se escribe.
+        assert_eq!(e.cursor, Position { line: 1, col: 1 });
+    }
+
+    #[test]
+    fn enter_conserva_la_sangria_de_la_linea_y_le_suma_una() {
+        let mut e = ed("    if x {\n");
+        e.indent_with_spaces = true;
+        e.tab_width = 4;
+        e.cursor = Position { line: 0, col: 10 };
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "    if x {\n        \n");
+    }
+
+    #[test]
+    fn una_llave_adentro_de_una_cadena_no_sangra() {
+        let mut e = ed("let s = \"{\";\n");
+        // Sin resaltado, la llave de la cadena se cuenta y sangra de más.
+        e.cursor = Position { line: 0, col: 12 };
+        e.highlights_by_line = vec![vec![(8, 11, HighlightKind::String)]];
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "let s = \"{\";\n\n");
+    }
+
+    #[test]
+    fn una_llave_ya_cerrada_en_la_misma_linea_no_sangra() {
+        let mut e = ed("f(x);\n");
+        e.cursor = Position { line: 0, col: 5 };
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "f(x);\n\n");
+    }
+
+    #[test]
+    fn en_python_los_dos_puntos_abren_bloque() {
+        let mut e = ed("def f():\n");
+        e.indent_after_colon = true;
+        e.indent_with_spaces = true;
+        e.tab_width = 4;
+        e.cursor = Position { line: 0, col: 8 };
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "def f():\n    \n");
+
+        // En un lenguaje con llaves, un `:` al final es otra cosa.
+        let mut e = ed("case x:\n");
+        e.cursor = Position { line: 0, col: 7 };
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "case x:\n\n");
+    }
+
+    #[test]
+    fn con_varios_cursores_enter_sigue_copiando_la_sangria_de_cada_linea() {
+        let mut e = ed("  uno\n    dos\n");
+        e.apply_selections(vec![sel((0, 5), (0, 5)), sel((1, 7), (1, 7))]);
+        e.insert_newline();
+        assert_eq!(e.rope.to_string(), "  uno\n  \n    dos\n    \n");
     }
 
     #[test]
