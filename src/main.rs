@@ -158,6 +158,11 @@ struct App {
     macro_recording: Option<Vec<Action>>,
     /// La última macro terminada, lista para repetirse.
     macro_last: Vec<Action>,
+    /// Las rutas que ofrece el buscador de archivos. Se arma al abrirlo y no
+    /// antes: recorrer el proyecto al arrancar retrasaría la primera pantalla
+    /// por algo que quizás no se usa, y armarlo cada vez mantiene la lista al
+    /// día sin tener que vigilar el disco.
+    file_index: Vec<String>,
     /// La vista previa ya renderizada y de qué estado salió
     /// (buffer, versión del contenido, ancho). Renderizar Markdown y
     /// resaltar sus cercos de código es caro comparado con dibujar, así que
@@ -208,6 +213,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
         ("Comentar/descomentar líneas (^K)", Action::ToggleComment),
         ("Saltar al paréntesis/llave que hace pareja", Action::JumpMatchingBracket),
+        ("Abrir archivo del proyecto… (^T)", Action::FindFilePrompt),
         ("Ir a la línea…", Action::GotoLinePrompt),
         ("Grabar/terminar macro (^U)", Action::MacroRecord),
         ("Repetir la macro (^B)", Action::MacroPlay),
@@ -504,6 +510,7 @@ fn main() -> io::Result<()> {
         clipboard_mode: cfg.clipboard,
         macro_recording: None,
         macro_last: Vec::new(),
+        file_index: Vec::new(),
         config: cfg,
         clipboard: arboard::Clipboard::new().ok(),
         preview_lines: Vec::new(),
@@ -732,6 +739,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
             Mode::Palette { query, .. } => filtered_palette_indices(app, query)
                 .into_iter()
                 .filter_map(|i| app.palette_entries.get(i).map(|e| e.label.clone()))
+                .collect(),
+            Mode::FilePicker { query, .. } => filtered_file_indices(app, query)
+                .into_iter()
+                .filter_map(|i| app.file_index.get(i).cloned())
                 .collect(),
             _ => Vec::new(),
         };
@@ -1149,6 +1160,7 @@ fn handle_key(app: &mut App, key: KeyEvent, page_size: usize) {
         Mode::Prompt { .. } => handle_prompt_key(app, key),
         Mode::Completion { .. } => handle_completion_key(app, key),
         Mode::Palette { .. } => handle_palette_key(app, key),
+        Mode::FilePicker { .. } => handle_file_picker_key(app, key),
     }
 }
 
@@ -1443,6 +1455,7 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
             }
         }
         Action::InsertChar(c) => app.buffers[app.active].ed.insert_char_pairing(c),
+        Action::FindFilePrompt => open_file_picker(app),
         Action::JumpMatchingBracket => {
             let ed = &mut app.buffers[app.active].ed;
             ed.status = if ed.jump_to_matching_bracket() {
@@ -1664,6 +1677,194 @@ fn handle_palette_key(app: &mut App, key: KeyEvent) {
         _ => {}
     }
     app.buffers[app.active].ed.mode = Mode::Palette { query, selected };
+}
+
+/// Cuántos archivos entran en el índice. Un proyecto normal no llega ni
+/// cerca; el tope está para que abrir el buscador en `/` o en un home entero
+/// no se coma toda la memoria ni tarde un minuto.
+const MAX_ARCHIVOS_INDEXADOS: usize = 20_000;
+/// Hasta dónde bajar. Más profundo que esto, en un proyecto de verdad, ya es
+/// caché de alguna herramienta.
+const MAX_PROFUNDIDAD: usize = 12;
+
+/// Directorios que nunca aportan un archivo que uno quiera editar a mano.
+/// Recorrerlos es la diferencia entre un índice instantáneo y uno que tarda.
+fn directorio_ignorado(nombre: &str) -> bool {
+    matches!(
+        nombre,
+        ".git" | "target" | "node_modules" | ".venv" | "venv" | "__pycache__" | ".mypy_cache"
+    )
+}
+
+/// Recorre el proyecto desde `raiz` y devuelve las rutas relativas de los
+/// archivos, ordenadas. Sin dependencias: `read_dir` con una pila propia, que
+/// además hace fácil respetar los topes de arriba.
+fn indexar_archivos(raiz: &Path) -> Vec<String> {
+    let mut pendientes = vec![(raiz.to_path_buf(), 0usize)];
+    let mut encontrados: Vec<String> = Vec::new();
+    while let Some((dir, profundidad)) = pendientes.pop() {
+        if encontrados.len() >= MAX_ARCHIVOS_INDEXADOS {
+            break;
+        }
+        let Ok(entradas) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entrada in entradas.flatten() {
+            let ruta = entrada.path();
+            let Some(nombre) = ruta.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Ok(tipo) = entrada.file_type() else { continue };
+            if tipo.is_dir() {
+                // Los enlaces simbólicos no se siguen: un enlace a un
+                // directorio de más arriba haría un recorrido infinito.
+                if !tipo.is_symlink()
+                    && profundidad < MAX_PROFUNDIDAD
+                    && !directorio_ignorado(nombre)
+                    && !nombre.starts_with('.')
+                {
+                    pendientes.push((ruta, profundidad + 1));
+                }
+                continue;
+            }
+            if nombre.starts_with('.') {
+                continue;
+            }
+            let relativa = ruta.strip_prefix(raiz).unwrap_or(&ruta);
+            encontrados.push(relativa.to_string_lossy().to_string());
+            if encontrados.len() >= MAX_ARCHIVOS_INDEXADOS {
+                break;
+            }
+        }
+    }
+    encontrados.sort_unstable();
+    encontrados
+}
+
+/// Lo que hace que un directorio sea "el proyecto" y no una carpeta más.
+const MARCAS_DE_PROYECTO: &[&str] = &[
+    ".git",
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "go.mod",
+    "Makefile",
+];
+
+/// La raíz del buscador. Se arranca en el directorio del archivo abierto (o
+/// desde donde se lanzó Flint, si el buffer no tiene nombre) y se sube
+/// mientras se encuentre una marca de proyecto, quedándose con la más alta:
+/// abrir `src/main.rs` tiene que ofrecer todo el repositorio, no solo `src/`.
+/// Sin ninguna marca, la raíz es el directorio del archivo — que es lo
+/// conservador: en `/etc/hosts` uno no quiere indexar `/`.
+fn raiz_del_proyecto(app: &App) -> PathBuf {
+    let inicio = app.buffers[app.active]
+        .ed
+        .filename
+        .as_ref()
+        .and_then(|p| p.parent())
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let absoluto = std::fs::canonicalize(&inicio).unwrap_or(inicio.clone());
+
+    let mut raiz = inicio;
+    let mut actual = absoluto.as_path();
+    loop {
+        if MARCAS_DE_PROYECTO.iter().any(|m| actual.join(m).exists()) {
+            raiz = actual.to_path_buf();
+        }
+        match actual.parent() {
+            Some(padre) => actual = padre,
+            None => break,
+        }
+    }
+    raiz
+}
+
+fn open_file_picker(app: &mut App) {
+    let raiz = raiz_del_proyecto(app);
+    app.file_index = indexar_archivos(&raiz);
+    if app.file_index.is_empty() {
+        app.buffers[app.active].ed.status =
+            format!("No encontré archivos en {}", raiz.display());
+        return;
+    }
+    let n = app.file_index.len();
+    app.buffers[app.active].ed.status = format!("{n} archivo(s) en {}", raiz.display());
+    app.buffers[app.active].ed.mode = Mode::FilePicker {
+        query: String::new(),
+        selected: 0,
+    };
+}
+
+fn filtered_file_indices(app: &App, query: &str) -> Vec<usize> {
+    let mut scored: Vec<(i32, usize)> = app
+        .file_index
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ruta)| fuzzy_score(query, ruta).map(|s| (s, i)))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, i)| i).collect()
+}
+
+/// Mismo teclado que la paleta: escribir filtra, las flechas eligen, Enter
+/// abre y Esc cancela.
+fn handle_file_picker_key(app: &mut App, key: KeyEvent) {
+    let (mut query, mut selected) =
+        match std::mem::replace(&mut app.buffers[app.active].ed.mode, Mode::Editing) {
+            Mode::FilePicker { query, selected } => (query, selected),
+            other => {
+                app.buffers[app.active].ed.mode = other;
+                return;
+            }
+        };
+
+    match key.code {
+        KeyCode::Esc => {
+            app.buffers[app.active].ed.status = "Cancelado".to_string();
+            return;
+        }
+        KeyCode::Backspace => {
+            query.pop();
+            selected = 0;
+        }
+        KeyCode::Up => {
+            let filtered = filtered_file_indices(app, &query);
+            selected = selected
+                .checked_sub(1)
+                .unwrap_or(filtered.len().saturating_sub(1));
+        }
+        KeyCode::Down => {
+            let filtered = filtered_file_indices(app, &query);
+            if !filtered.is_empty() {
+                selected = (selected + 1) % filtered.len();
+            }
+        }
+        KeyCode::Enter => {
+            let filtered = filtered_file_indices(app, &query);
+            match filtered.get(selected).and_then(|&i| app.file_index.get(i)) {
+                Some(relativa) => {
+                    let ruta = raiz_del_proyecto(app).join(relativa);
+                    open_file_into_new_buffer(app, ruta.to_string_lossy().to_string());
+                    return;
+                }
+                None => {
+                    // Sin coincidencias no se cierra: da lugar a corregir lo
+                    // escrito, igual que la paleta.
+                    app.buffers[app.active].ed.mode = Mode::FilePicker { query, selected };
+                    return;
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            query.push(c);
+            selected = 0;
+        }
+        _ => {}
+    }
+    app.buffers[app.active].ed.mode = Mode::FilePicker { query, selected };
 }
 
 fn run_palette_command(app: &mut App, idx: usize) {

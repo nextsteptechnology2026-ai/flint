@@ -65,6 +65,8 @@ pub enum Action {
     ToggleComment,
     /// Preguntar a qué línea saltar.
     GotoLinePrompt,
+    /// Abrir el buscador difuso de archivos del proyecto.
+    FindFilePrompt,
     /// Saltar al delimitador que hace pareja con el de al lado del cursor.
     JumpMatchingBracket,
     /// Empezar a grabar una macro, o terminarla si ya se está grabando.
@@ -209,6 +211,7 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::Char('l')), ToggleWrap);
     d(KeyChord::with_ctrl(T::Char('e')), TogglePreview);
     d(KeyChord::with_ctrl(T::Char('k')), ToggleComment);
+    d(KeyChord::with_ctrl(T::Char('t')), FindFilePrompt);
     d(KeyChord::with_ctrl(T::Char('u')), MacroRecord);
     d(KeyChord::with_ctrl(T::Char('b')), MacroPlay);
     d(KeyChord::with_ctrl(T::PageDown), NextBuffer);
@@ -428,6 +431,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("escape", EscapeKey),
         ("toggle_comment", ToggleComment),
         ("jump_matching_bracket", JumpMatchingBracket),
+        ("find_file", FindFilePrompt),
         ("goto_line", GotoLinePrompt),
         ("record_macro", MacroRecord),
         ("play_macro", MacroPlay),

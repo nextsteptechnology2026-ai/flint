@@ -141,7 +141,7 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
     if let Mode::Completion { selected, .. } = &ed.mode {
         draw_completion_popup(f, text_area, completion_matches, *selected, theme);
     }
-    if let Mode::Palette { selected, .. } = &ed.mode {
+    if let Mode::Palette { selected, .. } | Mode::FilePicker { selected, .. } = &ed.mode {
         draw_palette_popup(f, text_area, palette_matches, *selected, theme);
     }
 
@@ -247,6 +247,7 @@ fn draw_message(f: &mut Frame, ed: &Editor, area: Rect, theme: &Theme) {
             )
         }
         Mode::Palette { query, .. } => format!(" Paleta de comandos › {query}"),
+        Mode::FilePicker { query, .. } => format!(" Abrir archivo › {query}"),
         Mode::Editing => format!(" {}", ed.status),
     };
     let p = Paragraph::new(text).style(Style::default().fg(theme.bar_fg));

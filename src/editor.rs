@@ -198,6 +198,10 @@ pub enum Mode {
     /// viven en `App`, acá solo el texto que se está escribiendo y cuál está
     /// resaltado.
     Palette { query: String, selected: usize },
+    /// Buscador de archivos del proyecto (Ctrl+T). Se dibuja igual que la
+    /// paleta y filtra igual; lo que cambia es la lista de abajo (rutas en
+    /// vez de comandos) y qué hace Enter (abrir un buffer).
+    FilePicker { query: String, selected: usize },
 }
 
 /// Qué secuencia de caracteres separa líneas en este buffer — detectada al
