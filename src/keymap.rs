@@ -63,6 +63,8 @@ pub enum Action {
     EscapeKey,
     /// Comentar o descomentar las líneas de la selección.
     ToggleComment,
+    /// Preguntar a qué línea saltar.
+    GotoLinePrompt,
     /// Empezar a grabar una macro, o terminarla si ya se está grabando.
     MacroRecord,
     /// Repetir la última macro grabada.
@@ -422,6 +424,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("open_above", OpenAbove),
         ("escape", EscapeKey),
         ("toggle_comment", ToggleComment),
+        ("goto_line", GotoLinePrompt),
         ("record_macro", MacroRecord),
         ("play_macro", MacroPlay),
     ]

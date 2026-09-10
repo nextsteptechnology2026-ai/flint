@@ -203,6 +203,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Indentar líneas (Tab)", Action::InsertTab),
         ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
         ("Comentar/descomentar líneas (^K)", Action::ToggleComment),
+        ("Ir a la línea…", Action::GotoLinePrompt),
         ("Grabar/terminar macro (^U)", Action::MacroRecord),
         ("Repetir la macro (^B)", Action::MacroPlay),
     ];
@@ -1430,6 +1431,13 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         }
         Action::MacroRecord => toggle_macro_recording(app),
         Action::MacroPlay => play_macro(app, page_size),
+        Action::GotoLinePrompt => {
+            app.buffers[app.active].ed.mode = Mode::Prompt {
+                kind: PromptKind::GotoLine,
+                buffer: String::new(),
+                label: "Ir a la línea: ".to_string(),
+            };
+        }
         Action::ToggleComment => toggle_comment(app),
         Action::ToggleWrap => {
             let ed = &mut app.buffers[app.active].ed;
@@ -2161,6 +2169,20 @@ fn redetect_language(app: &mut App, idx: usize, path: &Path) {
 
 fn submit_prompt_editor(ed: &mut Editor, kind: PromptKind, buffer: String) {
     match kind {
+        PromptKind::GotoLine => match buffer.trim().parse::<usize>() {
+            // Se cuenta desde 1 porque es como se cuenta en la barra de
+            // estado y en cualquier mensaje de error de un compilador.
+            Ok(n) if n >= 1 => {
+                ed.goto_line(n - 1);
+                let real = ed.cursor.line + 1;
+                ed.status = if real == n {
+                    format!("Línea {n}")
+                } else {
+                    format!("El archivo termina en la línea {real}")
+                };
+            }
+            _ => ed.status = format!("\"{}\" no es un número de línea", buffer.trim()),
+        },
         PromptKind::Search => {
             let query = if buffer.trim().is_empty() {
                 ed.last_search.clone().unwrap_or_default()

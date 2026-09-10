@@ -169,6 +169,9 @@ pub enum PromptKind {
     /// — abrir un archivo implica sumar un `Buffer` entero, no solo tocar el
     /// `Editor` activo.
     OpenFile,
+    /// Número de línea al que saltar, contado desde 1 como lo cuenta la
+    /// barra de estado (y como lo escribe cualquier compilador).
+    GotoLine,
 }
 
 pub enum Mode {
@@ -1323,6 +1326,16 @@ impl Editor {
         true
     }
 
+    /// Lleva el cursor al principio de `line` (contada desde 0), sin
+    /// selección ni cursores extra. El desplazamiento de pantalla lo ajusta
+    /// el dibujado, que ya sigue al cursor esté donde esté.
+    pub fn goto_line(&mut self, line: usize) {
+        let line = line.min(self.line_count().saturating_sub(1));
+        self.cursor = Position { line, col: 0 };
+        self.selection_anchor = None;
+        self.secondary.clear();
+    }
+
     /// Saca los espacios y tabuladores del final de cada línea. Devuelve si
     /// tocó algo, para que quien llama sepa si hubo edición de verdad (y no
     /// gaste un paso de deshacer ni marque el buffer sucio si no la hubo).
@@ -1956,6 +1969,15 @@ mod tests {
         let mut vacio = ed("\n\n");
         vacio.apply_selections(vec![sel((0, 0), (1, 0))]);
         assert!(!vacio.toggle_line_comment("#"));
+    }
+
+    #[test]
+    fn ir_a_una_linea_de_mas_cae_en_la_ultima() {
+        let mut e = ed("uno\ndos\ntres\n");
+        e.goto_line(1);
+        assert_eq!(e.cursor, Position { line: 1, col: 0 });
+        e.goto_line(9999);
+        assert_eq!(e.cursor.line, e.line_count() - 1);
     }
 
     #[test]
