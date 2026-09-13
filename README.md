@@ -37,14 +37,29 @@ Flint no te hace elegir. Arranca en modo directo, sin nada que aprender, y todo 
 
 ## Instalación
 
-**Binarios ya compilados** — la vía más corta, sin necesidad de Rust: en [releases](https://github.com/nextsteptechnology2026-ai/flint/releases) hay un `.deb` para Debian y derivadas, y un `.tar.gz` para cualquier otro Linux x86_64 (con `sha256sums.txt` para verificarlos).
+**Una línea, sin Rust ni nada instalado** (Linux x86_64 y macOS, Intel o Apple Silicon):
 
-**Paquete `.deb` armado por vos** (Debian, Ubuntu, Kali y derivados). La máquina donde se instala **no** necesita tener Rust:
+```sh
+curl -fsSL https://raw.githubusercontent.com/nextsteptechnology2026-ai/flint/main/packaging/install.sh | sh
+```
+
+Baja el binario ya compilado de la última release, verifica su `sha256` contra el que publicó esa misma release, y lo deja en `/usr/local/bin` si podés escribir ahí o en `~/.local/bin` si no. Nunca pide `sudo` por su cuenta. Se le puede pasar `FLINT_VERSION=0.2.0` para una versión puntual o `FLINT_PREFIX=~/algo` para instalar en otro lado. Para desinstalar alcanza con borrar el binario.
+
+**Homebrew** (macOS y Linux):
+
+```sh
+brew tap nextsteptechnology2026-ai/flint
+brew install flint
+```
+
+**Paquete `.deb`** (Debian, Ubuntu, Kali y derivados). En [releases](https://github.com/nextsteptechnology2026-ai/flint/releases) está el `.deb` listo, junto con los `.tar.gz` de cada plataforma y `sha256sums.txt`. También se puede armar en el momento; la máquina donde se instala **no** necesita tener Rust:
 
 ```sh
 bash packaging/build-deb.sh                       # compila y arma el paquete
 sudo apt install ./target/deb/flint_*_amd64.deb
 ```
+
+Si `apt` responde `fichero no admitido` o `unsupported file`, no es el paquete: `apt` baja privilegios al usuario `_apt`, que no puede entrar a un directorio personal en modo `700`. Se arregla instalando desde una ruta que ese usuario pueda leer (`/tmp`, por ejemplo) o con `sudo dpkg -i`, que no baja privilegios.
 
 **Desde el código** (necesita Rust ≥ 1.85, por la edición 2024):
 
@@ -89,7 +104,7 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 - **Capa modal opcional** (`F2`): modelo selección→acción estilo Kakoune/Helix, con **selección estructural** sobre el árbol de tree-sitter (`n` expande al nodo que contiene la selección, y otra vez sube al padre).
 - **Multi-cursor de verdad**: `Ctrl+D` y `Alt+clic`; escribir, borrar y deshacer actúan sobre todos los cursores a la vez, de forma atómica.
 - **El lenguaje sale del archivo, no solo de la extensión**: un script sin extensión que empieza con `#!/usr/bin/env python3` se resalta como Python.
-- **Resaltado y LSP reales**: tree-sitter para Rust, Python, JSON, TOML y Markdown (donde la negrita se ve en negrita y la cursiva en cursiva, no en otro color); cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) — diagnósticos subrayados en el rango exacto y autocompletado que filtra por lo que ya escribiste. Trae `rust-analyzer` de fábrica y se probó también contra `pylsp`; cualquier otro servidor es un renglón en `[lsp]`, no un cambio de código. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
+- **Resaltado y LSP reales**: tree-sitter para diecisiete lenguajes (Rust, Python, JavaScript, TypeScript, TSX, Go, C, C++, Java, Lua, Shell, HTML, CSS, YAML, JSON, TOML y Markdown, este último con la negrita en negrita y la cursiva en cursiva, no en otro color); cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) — diagnósticos subrayados en el rango exacto, autocompletado que filtra por lo que ya escribiste, ir a la definición (`Ctrl+]` o `F12`) y renombrar un símbolo en todo el proyecto (`F6`). Trae `rust-analyzer` de fábrica y se probó también contra `pylsp`; cualquier otro servidor es un renglón en `[lsp]`, no un cambio de código. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
 - **Autocompletado en cualquier archivo**: con servidor LSP, sus sugerencias; sin él, las palabras que ya escribiste en el archivo (como `Ctrl+N` en Vim), sin distinguir mayúsculas y ordenadas por cercanía al cursor.
 - **Configurable sin recompilar**: `~/.config/flint/config.toml` decide perfil de teclado, ancho de tabulación, tabuladores o espacios, ajuste de línea, recorte de espacios al guardar y cierre automático de pares — todo eso también **por patrón de archivo** (`[files."*.py"]`), así que Python indenta con espacios y Rust con tabuladores en el mismo editor. Las teclas se redefinen en `[keys]` por el nombre estable de cada acción (`flint --actions` los lista), y los servidores de lenguaje en `[lsp]`, sin tocar el código.
 - **Portapapeles que funciona por SSH**: si no hay servidor gráfico, copiar sale por **OSC 52** hacia la terminal que tenés adelante, en vez de perderse. Configurable (`auto`, `system`, `terminal`, `internal`).
@@ -129,7 +144,8 @@ Una advertencia de lectura: algunas limitaciones que se mencionan en las fases t
 
 ## Qué hace (Fase 1)
 
-- **Resaltado de sintaxis real** vía [tree-sitter](https://tree-sitter.github.io/), no aproximaciones por regex. Cubre **Rust, Python, JSON, TOML y Markdown** por extensión de archivo (`.rs .py .json .toml .md`); cualquier otra extensión se edita en texto plano, sin romperse. Se recalcula solo cuando el contenido cambia, no en cada redibujado.
+- **Resaltado de sintaxis real** vía [tree-sitter](https://tree-sitter.github.io/), no aproximaciones por regex. Cubre diecisiete lenguajes por extensión, por nombre de archivo (`.bashrc`) o por shebang: `.rs .py .js .mjs .cjs .jsx .ts .mts .cts .tsx .go .c .h .cpp .cc .cxx .hpp .java .lua .sh .bash .zsh .ksh .html .htm .css .yaml .yml .json .toml .md`. Cualquier otra extensión se edita en texto plano, sin romperse. Se recalcula solo el tramo que cambió, reusando el árbol de la pasada anterior.
+- **Lenguajes adentro de otros**: el `<style>` de un HTML se colorea como CSS y el `<script>` como JavaScript; el cerco de código de un Markdown, como el lenguaje que declara (```rust). Sale de la consulta de inyecciones de cada gramática, así que no es una lista de casos escrita a mano. Un cerco que declara un lenguaje que Flint no tiene se muestra plano, sin romper el resto del documento.
 - **Cliente LSP real** (JSON-RPC sobre stdio, en un hilo aparte para no bloquear la interfaz). Rust trae `rust-analyzer` de fábrica; cualquier otro lenguaje se conecta escribiendo su comando en `[lsp]` en `config.toml`. Se probó de punta a punta con `pylsp` sobre Python: arranque, sincronización incremental, diagnósticos y autocompletado.
   - **Diagnósticos**: se muestran como marca en el margen (✖ error, ▲ warning), resumen en la barra de título, y `Ctrl+G` salta al siguiente y muestra su mensaje real del servidor.
   - **Autocompletado** (`Ctrl+Espacio`): pide sugerencias al servidor en la posición del cursor y las muestra en una lista flotante (↑↓ para elegir, `Enter`/`Tab` para insertar, `Esc` para cancelar). Inserta el texto de la sugerencia tal cual — no reemplaza un prefijo ya escrito ni aplica ediciones estructuradas (`TextEdit`) más complejas.
@@ -242,11 +258,11 @@ Lo que queda afuera de este alcance: Homebrew y binarios adjuntos a una release 
 
 Esto es intencionalmente angosto — nada de esto es un bug, es alcance de una fase posterior:
 
-- Solo Rust tiene servidor LSP conectado; Python/JSON/TOML se quedan en resaltado de sintaxis sin diagnósticos ni autocompletado (harían falta `pylsp`/`pyright` etc., con su propia receta de instalación).
+- Servidores LSP que Flint arranca solo si están instalados: `rust-analyzer`, `clangd` (C y C++), `gopls` y `lua-language-server`, que son los que funcionan sin argumentos sobre stdio. El resto necesita banderas (`--stdio`, `start`) y va en `[lsp]` del config.toml, con el comando completo. Instalación guiada hay solo para `rust-analyzer`: adivinar el gestor de paquetes de la máquina sería peor que no ofrecer nada.
 - Los plugins de Lua no pueden tocar el portapapeles ni el registro todavía.
 - No hay forma de que un plugin de Lua defina su propia paleta de colores de sintaxis para un lenguaje que Flint no conozca — necesitaría poder cargar una gramática de tree-sitter en tiempo de ejecución (las que trae Flint hoy están compiladas de fábrica, como crates de Rust), que es un motor de carga dinámica aparte, no una extensión chica.
 - Los plugins de Lua no pueden asignar atajos propios ni tocar la selección — ver la nota de la Fase 3 arriba.
-- Resaltado de sintaxis: sigue siendo `O(n)` por recálculo — una reescritura de tree-sitter con parseo incremental de verdad (`Tree::edit` + reutilizar el árbol viejo) queda deliberadamente afuera: hacer mal el cálculo de posiciones del edit corrompe el árbol en *cualquier* archivo, no solo en los grandes, así que el riesgo no es proporcional a esta fase. Lo que sí se hizo fue no pagar ese costo en cada tecla: un margen de 120ms agrupa una ráfaga de tipeo en un solo recálculo al final, en vez de uno por letra.
+- Resaltado de sintaxis: ya no recorre el archivo entero en cada tecla. Reusa el árbol de la pasada anterior (`Tree::edit` + reparseo incremental), vuelve a consultar solo el tramo que tree-sitter marca como cambiado, y conserva el resaltado de las líneas que no se tocaron. Una tecla cuesta 0,4 ms en un archivo de 100 KB y 3,5 ms en uno de 3 MB, contra 57 ms y 1,16 s antes; por eso tampoco hace falta ya el margen de espera de 120 ms, y los colores se actualizan mientras escribís. Lo que sigue siendo `O(n)` es la *primera* pasada, al abrir el archivo.
 - Archivos muy grandes: la búsqueda y el reemplazo siguen siendo `O(n)` en tiempo (inevitable — hay que leer el archivo para encontrar algo en él), pero ya no copian el buffer entero a memoria de más de lo necesario: la búsqueda recorre el rope directamente con una ventana deslizante en vez de volcarlo a un `String` primero, y reemplazar-todo cuenta y arma el resultado en una sola pasada en vez de dos separadas.
 - El tema no detecta si la terminal está en claro u oscuro — no hay forma portable y confiable de preguntárselo a la terminal (la consulta OSC 11 que algunas soportan no la implementan todas, y menos todavía atravesando `tmux`/`screen`); en vez de una detección que funcione a veces y se cuelgue esperando respuesta otras, queda a mano en `theme.toml` (que sí se recarga en caliente, ver abajo).
 

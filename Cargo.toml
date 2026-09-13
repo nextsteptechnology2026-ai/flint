@@ -1,6 +1,6 @@
 [package]
 name = "flint"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 description = "Editor de terminal con capa modal opcional, resaltado de sintaxis y LSP via tree-sitter, multi-cursor, temas configurables y plugins en Lua"
 authors = ["Next Step Technology SpA <nextsteptechnology2026@gmail.com>"]
@@ -22,14 +22,31 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = "1.1.4"
 tree-sitter = "0.27.0"
-tree-sitter-highlight = "0.27.0"
+tree-sitter-bash = "0.25.1"
+tree-sitter-c = "0.24.2"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-css = "0.25.0"
+tree-sitter-go = "0.25.0"
+tree-sitter-html = "0.23.2"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.25.0"
 tree-sitter-json = "0.24.8"
+tree-sitter-lua = "0.5.0"
 tree-sitter-md = "0.5.3"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-toml-ng = "0.7.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-yaml = "0.7.2"
 unicode-segmentation = "1.12.0"
 # Ya estaba en el árbol (ratatui la usa para medir lo que dibuja); tenerla
 # como dependencia directa es lo que garantiza que el cursor y el texto se
 # midan con la misma regla que usa el renderer.
 unicode-width = "0.2.2"
+
+[dev-dependencies]
+# El motor viejo de resaltado quedó solo como oráculo de las pruebas: el
+# resaltado incremental recorre la consulta a mano para poder reusar el
+# árbol, y `tests_oraculo` compara las dos salidas para que ese cambio no
+# altere ni un color. No se compila en el binario.
+tree-sitter-highlight = "0.27.0"

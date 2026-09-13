@@ -5,31 +5,33 @@ Este archivo se reescribió el 2026-09-10, después de cerrar el bloque
 Cada punto de acá se verificó contra el código antes de anotarlo.
 
 Medianos:
-1. Plugins Lua limitados — la API es register_command, status, insert_text,
-   filename y line_count. No pueden bindear teclas propias, leer o mover la
-   selección, tocar el portapapeles, ni definir colores de sintaxis para un
-   lenguaje nuevo. Ahora hay con qué: el enum Action tiene nombres estables
-   (Action::from_name), así que un plugin podría pedir una acción por nombre
-   sin que la API crezca una función por cada cosa que Flint sabe hacer.
-2. Tests: el hueco cambió de lugar. Hoy hay 72 y cubren columnas,
+1. Gestor de plugins. Ahora sí tiene sentido preguntárselo: la API alcanza
+   para escribir un plugin útil (ver abajo), así que el día que haya más de
+   un puñado dando vueltas va a hacer falta algo para instalarlos y
+   actualizarlos. Hoy se copian a mano a ~/.config/flint/plugins/.
+   Lo que sigue faltando de la API: definir un lenguaje nuevo con su
+   resaltado, y correr algo en respuesta a un evento (guardar, abrir) en vez
+   de solo cuando el usuario invoca un comando.
+2. Tests: el hueco cambió de lugar. Hoy hay 117 y cubren columnas,
    indentación (incluida la automática al apretar Enter), comentarios, pares
    de delimitadores, recorte al guardar, configuración, respaldos, el parseo
-   de las respuestas de autocompletado y el dibujado en una terminal angosta.
+   de las respuestas de autocompletado, el dibujado en una terminal angosta,
+   el resaltado incremental (contra el motor viejo y contra recalcular todo),
+   las diecisiete gramáticas, la API de plugins y el traductor entre lo
+   que manda un servidor LSP y lo que hace Flint (ir a la definición y
+   renombrar).
    Sigue sin cubrirse el ciclo de edición completo: deshacer/rehacer,
    multi-cursor, búsqueda y reemplazo, y el cliente LSP de punta a punta
    (eso último se probó a mano contra rust-analyzer y contra pylsp, pero no
    hay nada automático que lo cuide).
-3. El resaltado de sintaxis recalcula todo el documento en vez de reusar el
-   árbol. Se mitigó con un debounce de 120 ms (HIGHLIGHT_DEBOUNCE), pero el
-   incremental de verdad de tree-sitter es una reescritura, y hecho a medias
-   deja el árbol corrupto en silencio. Es el punto que más se va a notar
-   cuando aparezca un archivo grande de verdad.
+3. La *primera* pasada del resaltado, al abrir un archivo, sigue siendo
+   proporcional al tamaño: unos 1,1 s en un archivo de 3 MB, y hasta que
+   termina el archivo se ve sin color. Lo que arregla eso es resaltar
+   primero lo que está en pantalla y el resto después, no un algoritmo
+   mejor. (El recálculo por tecla ya no es un problema: ver abajo.)
 
 Chicos:
-4. Homebrew: una fórmula para instalar en macOS/Linux con `brew`. Necesita
-   además decidir si se compila desde fuente en la máquina del usuario o se
-   publican binarios de macOS, que hoy no se construyen.
-5. La compilación no es reproducible bit a bit: el .deb que armó el runner
+4. La compilación no es reproducible bit a bit: el .deb que armó el runner
    para la v0.1.3 y el construido en local con el mismo código dan sha256
    distintos (f286f94e… vs e393b718…). Los dos son correctos — cambian el
    toolchain, las rutas embebidas y las fechas — pero para un proyecto que
@@ -37,12 +39,12 @@ Chicos:
    permite a un tercero verificar que el binario sale de ese código y no de
    otra cosa. Se ataca con SOURCE_DATE_EPOCH, --remap-path-prefix y fijar la
    versión del toolchain (rust-toolchain.toml).
-6. La auto-indentación no des-indenta sola al escribir el cierre. Si uno
+5. La auto-indentación no des-indenta sola al escribir el cierre. Si uno
    escribe la llave de cierre a mano en una línea ya sangrada, queda un nivel
    de más; hay que sacarlo con Shift+Tab. Lo mismo con `else` y `elif` en
    Python. Es lo que falta para que la indentación sea completa, y sale del
    mismo lugar que el resto (par_de + is_in_string_or_comment).
-7. El autocompletado ignora el *rango* de textEdit y usa solo su newText:
+6. El autocompletado ignora el *rango* de textEdit y usa solo su newText:
    reemplaza desde donde se abrió el popup hasta el cursor. Coincide con lo
    que quiere casi todo servidor, pero uno que pida reemplazar más atrás (un
    import completo, por ejemplo) quedaría mal aplicado.
@@ -60,9 +62,14 @@ Afuera a propósito (no son pendientes, son decisiones):
   estado a una struct de vista es el mismo archivo en dos paneles.
 - Gestor de plugins. Sin comunidad no hay nada que gestionar; los tres
   directorios de carga alcanzan. Lo que sí falta es ancho de API (punto 2).
-- Los ~130 lenguajes de micro. No se persiguen: se agrega una gramática
-  cuando aparece ese tipo de archivo. Cinco gramáticas con árbol de verdad
-  valen más que ciento treinta con expresiones regulares.
+- Los ~130 lenguajes de micro. Siguen sin perseguirse uno por uno, pero el
+  2026-09-10 se pasó de cinco gramáticas a diecisiete, eligiendo las de los
+  archivos que la gente abre todos los días. Diecisiete con árbol de verdad
+  valen más que ciento treinta con expresiones regulares. Costo: el binario
+  pasó de 7,7 MB a 17 MB, que es el orden del de micro. Agregar uno más es
+  una fila de la tabla `LENGUAJES` en highlight.rs y una variante de `Lang`,
+  y hay tests que avisan si la consulta no compila contra su gramática o si
+  no captura nada.
 - Leer el portapapeles por OSC 52. El estándar lo define, pero las terminales
   lo tienen apagado (dejaría que un programa remoto lea lo que copiaste) y la
   respuesta llegaría mezclada con las teclas. Pegar usa el registro interno
@@ -73,6 +80,106 @@ grandes mejor que las líneas en memoria de micro, el cliente LSP es nativo y
 no un plugin de terceros, los delimitadores se cuentan salteando cadenas y
 comentarios porque hay un árbol de verdad detrás, y la capa modal opcional
 con selección estructural no tiene equivalente ahí.
+
+Ir a la definición y renombrar — cerrado el 2026-09-10:
+- textDocument/definition y textDocument/rename, atados a Ctrl+] o F12 y a
+  F6, más `D` y `r` en la capa modal, más la paleta. Probados de punta a
+  punta contra rust-analyzer real sobre un proyecto Cargo: el salto cae en la
+  línea correcta y el renombre cambió las tres ocurrencias y quedó bien en
+  disco después de guardar.
+- Se leen las capacidades del servidor (definitionProvider, renameProvider)
+  en vez de pedir a ciegas: mandar una petición que el servidor no atiende
+  deja al usuario esperando una respuesta que no llega.
+- Antes de cada petición se fuerza la sincronización, sin esperar el margen
+  de 500 ms. Con la versión vieja del archivo, el salto cae donde estaba el
+  símbolo hace un rato.
+- El renombre abre los archivos que toca y los deja sin guardar, para que se
+  puedan revisar. Tope de 50 archivos, y si el servidor pide además crear o
+  borrar archivos se corta antes de tocar nada. Un Ctrl+Z deshace el
+  renombre entero de un archivo.
+- Descubierto de paso: una terminal en modo tradicional no puede distinguir
+  Ctrl+] de Ctrl+5 (mismo byte, 0x1D), y lo mismo con Ctrl+\, Ctrl+^ y
+  Ctrl+_. La tecla por defecto estaba atada a algo que nunca iba a llegar.
+  Ahora parse_chord normaliza las cuatro a la forma que manda la terminal.
+
+Diecisiete lenguajes, API de plugins y distribución — cerrado el 2026-09-10:
+- De cinco gramáticas a diecisiete: se sumaron Shell, C, C++, CSS, Go, HTML,
+  Java, JavaScript, Lua, TypeScript, TSX y YAML. Todo lo que Flint sabe de un
+  lenguaje vive ahora en una tabla (LENGUAJES, en highlight.rs) en vez de
+  repartido en ocho `match`: agregar uno es una fila y una variante de `Lang`.
+  Hay tests que avisan si la tabla se desalinea del enum, si una consulta no
+  compila contra su gramática, o si no captura nada.
+- Dos consultas resultaron ser deltas y sin su base no capturaban casi nada:
+  la de C++ se apoya en la de C y la de TypeScript en la de JavaScript. Van
+  concatenadas, la específica al final, porque manda la última captura.
+- El lenguaje se decide por nombre completo de archivo (.bashrc), extensión y
+  shebang, en ese orden.
+- API de plugins de verdad. Además de registrar comandos, un script puede
+  leer el archivo, el lenguaje, el cursor, una línea, el texto entero, la
+  selección y el portapapeles; y pedir insertar, reemplazar la selección,
+  copiar, mover el cursor, y ejecutar cualquier acción de Flint por nombre
+  (flint.action). También puede atar sus propias teclas (flint.bind), en la
+  capa directa o en la modal, y se consultan antes que el perfil para que un
+  plugin pueda pisar un atajo existente a propósito.
+- El modelo es leer-y-pedir: el script ve una foto del editor y lo que pide
+  se aplica cuando terminó. Si falla a la mitad no se aplica nada, en vez de
+  dejar el buffer a medio camino.
+- De paso aparecieron las teclas de función (f1..f12), que no existían ni
+  para [keys] del config.toml. F2 sigue sin poder reasignarse: es el
+  interruptor de la capa modal.
+- Inyecciones: un archivo puede tener tramos de otro lenguaje y se colorean
+  con la gramática que les toca (el <style> de un HTML como CSS, el <script>
+  como JavaScript, el cerco de un Markdown como el lenguaje que declara).
+  Sale de la consulta de inyecciones de cada gramática, así que una gramática
+  nueva que traiga la suya funciona sola. De paso, la segunda pasada de
+  Markdown, que estaba escrita a mano, pasó a ser una inyección más.
+- Auditoría de capturas: varias gramáticas usaban nombres que Flint no
+  reconocía, y el efecto no era "esa captura no pinta" sino "el nodo se queda
+  sin color", porque manda la última captura que lo toca. Lua se veía casi en
+  blanco y negro (sus if/for/while salen como `conditional` y `repeat`), y
+  las etiquetas de HTML y CSS tampoco tenían color. Hay un test que ahora
+  falla si una gramática usa una captura que no se traduce a nada, salvo que
+  esté en CAPTURAS_IGNORADAS a propósito.
+- Distribución: instalador de una línea (packaging/install.sh, probado de
+  punta a punta contra la release v0.1.5 real), fórmula de Homebrew que se
+  genera sola en cada release con los sha256 recién calculados
+  (packaging/homebrew-formula.sh), y el workflow de release pasó a una
+  matriz que compila y prueba en Linux x86_64, macOS Intel y macOS Apple
+  Silicon. Falta todavía Linux aarch64, que necesita un runner ARM.
+
+Resaltado incremental — lo que se cerró el 2026-09-10:
+- El resaltado reusa el árbol de tree-sitter de la pasada anterior en vez de
+  reanalizar el documento. La edición sale de comparar prefijo y sufijo
+  comunes entre el rope de antes y el de ahora, no de anotar un InputEdit en
+  cada lugar que muta el buffer: así no hay forma de que deshacer, el
+  multi-cursor o reemplazar-todo desincronicen el árbol en silencio, que es
+  justo el riesgo por el que esto estaba postergado. A lo sumo describe un
+  tramo más grande del que cambió, y eso solo cuesta un poco más de reparseo.
+- La consulta de resaltado también se acotó: se vuelve a consultar solo el
+  tramo que `Tree::changed_ranges` marca, redondeado a líneas enteras, y las
+  líneas que no se tocaron conservan lo que ya tenían (se corren de número
+  con un splice). Los cambios a distancia —abrir un `/*`— siguen andando
+  porque el tramo lo decide el árbol.
+- Medido, por tecla en un archivo Rust: 101 KB pasó de 57 ms a 0,38 ms;
+  813 KB de 309 ms a 0,91 ms; 3 MB de 1,16 s a 3,5 ms.
+- Se eliminó HIGHLIGHT_DEBOUNCE: los colores se actualizan mientras se
+  escribe, sin esperar a que la ráfaga de tipeo termine.
+- La selección estructural (`n`) usa el árbol que el resaltado ya tiene en
+  caché en vez de volcar el buffer a un String y analizarlo de nuevo.
+- Para esto hubo que dejar de usar `tree-sitter-highlight`, que no acepta un
+  árbol viejo: la consulta se recorre a mano. El motor viejo quedó como
+  dependencia *de desarrollo* y como oráculo de las pruebas
+  (`tests_oraculo`), que comparan las dos salidas sobre archivos del propio
+  repo para que el cambio no altere ni un color. Reproducir su semántica
+  exacta tuvo dos vueltas: manda la *última* captura de cada nodo (si esa no
+  está en CAPTURE_NAMES el nodo no se colorea, aunque una anterior sí
+  estuviera), y entre capturas que empiezan en el mismo byte manda el orden
+  de los patrones, no el tamaño del nodo.
+- `tests_incremental` compara, después de cada edición, el resaltado
+  incremental contra uno hecho desde cero: tipeo letra por letra, borrar y
+  pegar bloques enteros, abrir comentarios y comillas, editar adentro de un
+  párrafo de Markdown, y acentos y emoji (donde el prefijo común puede caer
+  en la mitad de un carácter).
 
 Paridad con micro — lo que se cerró el 2026-09-10:
 - Auto-indentación de verdad al apretar Enter: hereda la sangría, suma un

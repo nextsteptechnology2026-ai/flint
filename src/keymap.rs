@@ -65,6 +65,10 @@ pub enum Action {
     ToggleComment,
     /// Preguntar a qué línea saltar.
     GotoLinePrompt,
+    /// Saltar a donde está definido el símbolo bajo el cursor (LSP).
+    GotoDefinition,
+    /// Renombrar el símbolo bajo el cursor en todo el proyecto (LSP).
+    RenamePrompt,
     /// Abrir el buscador difuso de archivos del proyecto.
     FindFilePrompt,
     /// Saltar al delimitador que hace pareja con el de al lado del cursor.
@@ -96,6 +100,9 @@ pub enum KeyToken {
     Backspace,
     Delete,
     Esc,
+    /// Teclas de función. F2 no llega nunca acá: es el interruptor de la
+    /// capa modal y se atiende antes que el keymap.
+    F(u8),
 }
 
 /// Una combinación de teclas concreta. Para `Char`, mayúscula/minúscula ya
@@ -157,6 +164,7 @@ pub fn chord_from_event(key: &KeyEvent) -> Option<KeyChord> {
         KeyCode::Backspace => KeyToken::Backspace,
         KeyCode::Delete => KeyToken::Delete,
         KeyCode::Esc => KeyToken::Esc,
+        KeyCode::F(n) => KeyToken::F(n),
         _ => return None,
     };
     // Para un carácter, mayúscula/minúscula ya lo distingue; no dupliques la
@@ -214,6 +222,11 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::Char('t')), FindFilePrompt);
     d(KeyChord::with_ctrl(T::Char('u')), MacroRecord);
     d(KeyChord::with_ctrl(T::Char('b')), MacroPlay);
+    // Ctrl+] es el atajo clásico de "ir a la definición"; la terminal lo
+    // manda como Ctrl+5, que es lo que hay que atar para que funcione.
+    d(KeyChord::with_ctrl(T::Char('5')), GotoDefinition);
+    d(KeyChord::plain(T::F(12)), GotoDefinition);
+    d(KeyChord::plain(T::F(6)), RenamePrompt);
     d(KeyChord::with_ctrl(T::PageDown), NextBuffer);
     d(KeyChord::with_ctrl(T::PageUp), PrevBuffer);
     d(KeyChord::plain(T::Enter), InsertNewline);
@@ -261,6 +274,8 @@ fn base_normal() -> HashMap<KeyChord, Action> {
     m.insert(KeyChord::plain(Char('x')), SelectLine);
     m.insert(KeyChord::plain(Char('n')), ExpandSelection);
     m.insert(KeyChord::plain(Char('m')), JumpMatchingBracket);
+    m.insert(KeyChord::plain(Char('D')), GotoDefinition);
+    m.insert(KeyChord::plain(Char('r')), RenamePrompt);
     m.insert(KeyChord::plain(Char('d')), NormalDelete);
     m.insert(KeyChord::plain(Char('c')), NormalChange);
     m.insert(KeyChord::plain(Char('y')), NormalYank);
@@ -433,6 +448,8 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("jump_matching_bracket", JumpMatchingBracket),
         ("find_file", FindFilePrompt),
         ("goto_line", GotoLinePrompt),
+        ("goto_definition", GotoDefinition),
+        ("rename", RenamePrompt),
         ("record_macro", MacroRecord),
         ("play_macro", MacroPlay),
     ]
@@ -514,13 +531,41 @@ pub fn parse_chord(s: &str) -> Result<KeyChord, String> {
         "right" | "derecha" => KeyToken::Right,
         "up" | "arriba" => KeyToken::Up,
         "down" | "abajo" => KeyToken::Down,
-        _ => {
-            let mut chars = tecla.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => KeyToken::Char(c),
-                _ => return Err(format!("\"{s}\": no reconozco la tecla \"{tecla}\"")),
+        otra => {
+            // "f1".."f12". Se prueba antes que el carácter suelto, porque
+            // "f" a secas sí es una tecla válida y "f1" no es ninguna letra.
+            if let Some(n) = otra
+                .strip_prefix('f')
+                .and_then(|d| d.parse::<u8>().ok())
+                .filter(|n| (1..=12).contains(n))
+            {
+                if n == 2 {
+                    return Err(format!(
+                        "\"{s}\": F2 no se puede reasignar, es el interruptor de la capa modal"
+                    ));
+                }
+                KeyToken::F(n)
+            } else {
+                let mut chars = tecla.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => KeyToken::Char(c),
+                    _ => return Err(format!("\"{s}\": no reconozco la tecla \"{tecla}\"")),
+                }
             }
         }
+    };
+
+    // Una terminal en modo tradicional no puede distinguir Ctrl+] de Ctrl+5:
+    // las dos mandan el mismo byte (0x1D), y lo mismo pasa con Ctrl+\,
+    // Ctrl+^ y Ctrl+_. Lo que llega del teclado siempre se ve como el dígito
+    // (ver `chord_from_event`), así que escribir "ctrl+]" se normaliza a esa
+    // forma en vez de quedar atado a una tecla que nunca va a llegar.
+    let token = match (ctrl, token) {
+        (true, KeyToken::Char(']')) => KeyToken::Char('5'),
+        (true, KeyToken::Char('\\')) => KeyToken::Char('4'),
+        (true, KeyToken::Char('^')) => KeyToken::Char('6'),
+        (true, KeyToken::Char('_')) => KeyToken::Char('7'),
+        (_, t) => t,
     };
 
     // La mayúscula ya distingue la tecla, así que Shift sobre una letra se
@@ -563,5 +608,73 @@ pub fn rebind_normal(map: &mut Keymap, chord: KeyChord, action: Option<Action>) 
         None => {
             map.normal.remove(&chord);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_teclas_de_funcion {
+    use super::*;
+
+    #[test]
+    fn las_teclas_de_funcion_se_escriben_y_se_reconocen() {
+        assert_eq!(parse_chord("f5"), Ok(KeyChord::plain(KeyToken::F(5))));
+        assert_eq!(parse_chord("F12"), Ok(KeyChord::plain(KeyToken::F(12))));
+        assert_eq!(
+            parse_chord("ctrl+f5"),
+            Ok(KeyChord::with_ctrl(KeyToken::F(5)))
+        );
+        // "f" a secas sigue siendo la letra, no una tecla de función rota.
+        assert_eq!(parse_chord("f"), Ok(KeyChord::plain(KeyToken::Char('f'))));
+        assert!(parse_chord("f13").is_err());
+        assert!(parse_chord("f0").is_err());
+    }
+
+    #[test]
+    fn f2_no_se_puede_reasignar() {
+        // Es el interruptor de la capa modal: si alguien la ata a otra cosa
+        // se queda sin forma de salir del modo.
+        let e = parse_chord("f2").unwrap_err();
+        assert!(e.contains("capa modal"), "{e}");
+    }
+
+    #[test]
+    fn la_tecla_de_funcion_llega_del_teclado() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let ev = KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE);
+        assert_eq!(chord_from_event(&ev), Some(KeyChord::plain(KeyToken::F(5))));
+    }
+}
+
+#[cfg(test)]
+mod tests_ctrl_corchete {
+    use super::*;
+
+    #[test]
+    fn ctrl_corchete_se_normaliza_a_lo_que_manda_la_terminal() {
+        // Las dos formas tienen que dar la misma tecla, porque la terminal
+        // manda el mismo byte para las dos. Atar "ctrl+]" y que no pase nada
+        // es peor que no poder atarlo.
+        let esperado = KeyChord::with_ctrl(KeyToken::Char('5'));
+        assert_eq!(parse_chord("ctrl+]"), Ok(esperado));
+        assert_eq!(parse_chord("ctrl+5"), Ok(esperado));
+        assert_eq!(
+            parse_chord("ctrl+\\"),
+            Ok(KeyChord::with_ctrl(KeyToken::Char('4')))
+        );
+        // Sin Ctrl no se toca: "]" a secas es el corchete.
+        assert_eq!(parse_chord("]"), Ok(KeyChord::plain(KeyToken::Char(']'))));
+    }
+
+    #[test]
+    fn ir_a_la_definicion_esta_atado_a_lo_que_llega_del_teclado() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // El byte 0x1D que manda Ctrl+] llega como Ctrl+5.
+        let ev = KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL);
+        let chord = chord_from_event(&ev).expect("es una tecla");
+        let km = flint_profile();
+        assert!(
+            matches!(km.direct.get(&chord), Some(Binding::Do(Action::GotoDefinition))),
+            "Ctrl+] tiene que llegar a ir-a-la-definición"
+        );
     }
 }

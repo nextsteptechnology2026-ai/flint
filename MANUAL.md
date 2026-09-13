@@ -369,18 +369,147 @@ flint.register_command("id-unico", "Etiqueta que se ve en la paleta", function()
 end)
 ```
 
-API disponible dentro de la función de un comando (deliberadamente chica por ahora):
+### Cómo funciona
 
-| Función | Qué hace |
+Un plugin no toca el editor: lo **lee** y **pide** cambios. Cuando se ejecuta
+un comando, el script ve una foto del editor —quieta, no una referencia viva—
+y todo lo que pide queda anotado. Flint lo aplica recién cuando el script
+terminó, en el orden en que lo pidió.
+
+Eso tiene una consecuencia que conviene saber: si el script falla a la mitad,
+no se aplica **nada** de lo que había pedido antes del error. Media intención
+aplicada deja el buffer en un estado que nadie quiso; ninguna, no.
+
+### Leer el editor
+
+| Función | Qué devuelve |
 |---|---|
-| `flint.status(texto)` | Muestra `texto` en la barra de mensaje |
-| `flint.insert_text(texto)` | Inserta `texto` en la posición del cursor |
-| `flint.filename()` | Devuelve la ruta del archivo abierto (`""` si no tiene nombre) |
-| `flint.line_count()` | Devuelve la cantidad de líneas del buffer |
+| `flint.filename()` | La ruta del archivo abierto, `""` si no tiene nombre |
+| `flint.language()` | El identificador del lenguaje (`"rust"`, `"python"`…), `nil` si el archivo no tiene |
+| `flint.line_count()` | Cuántas líneas tiene el buffer |
+| `flint.cursor()` | Dos valores: línea y columna del cursor primario |
+| `flint.line(n)` | El texto de la línea `n`, sin su salto |
+| `flint.text()` | El contenido completo |
+| `flint.selection()` | Lo seleccionado, `""` si no hay selección |
+| `flint.clipboard()` | Lo que hay para pegar |
 
-Ver `plugins/ejemplo.lua` para tres comandos reales y completos (insertar la fecha de hoy, mostrar info del archivo, insertar un saludo).
+Las líneas y las columnas cuentan **desde 1**, igual que las muestra la barra
+de estado y que las pide "Ir a la línea".
 
-**Lo que un plugin todavía no puede hacer**: asignar sus propios atajos de teclado, leer o mover la selección, ni tocar el buffer más allá de insertar texto en el cursor.
+### Pedir cambios
+
+| Función | Qué pide |
+|---|---|
+| `flint.status(texto)` | Mostrar `texto` en la barra de mensaje |
+| `flint.insert_text(texto)` | Insertar `texto` en cada cursor |
+| `flint.replace_selection(texto)` | Reemplazar lo seleccionado por `texto` (si no hay selección, lo inserta) |
+| `flint.set_clipboard(texto)` | Dejar `texto` en el portapapeles |
+| `flint.set_cursor(linea, col)` | Mover el cursor primario; `col` es opcional y por defecto 1 |
+| `flint.action(nombre)` | Ejecutar una acción de Flint por su nombre estable |
+
+`flint.action` es la que evita que la API tenga que crecer una función por
+cada cosa que Flint sabe hacer: los nombres son los mismos que lista
+`flint --actions` y los que se escriben en `[keys]` del config.toml, así que
+un plugin puede guardar, buscar, deshacer o abrir la paleta sin que exista un
+`flint.save()`.
+
+### Atajos propios
+
+```lua
+flint.bind("f5", "info-archivo")       -- a un comando de este mismo script
+flint.bind("ctrl+j", "goto_line")      -- a una acción de Flint
+flint.bind("g", "fecha", true)         -- en la capa modal NORMAL
+```
+
+El destino se busca primero entre los comandos registrados y después entre
+las acciones, así que un comando propio que se llame igual que una acción
+gana (y Flint lo avisa, porque casi seguro no era la intención). El tercer
+argumento, opcional, pone la tecla en la capa modal NORMAL en vez de la
+directa.
+
+Las teclas se escriben igual que en `config.toml`: `"ctrl+s"`, `"shift+tab"`,
+`"f5"`, `"g"`. Las de función van de `f1` a `f12`, con la excepción de `F2`,
+que no se puede reasignar ni desde un plugin ni desde la configuración: es el
+interruptor de la capa modal, y atarla a otra cosa te dejaría sin forma de
+salir del modo.
+
+Las teclas de los plugins se consultan **antes** que el perfil de teclado, así
+que un plugin puede pisar una tecla que Flint ya usa. Es a propósito: si se
+miraran después, un plugin nunca podría reemplazar un atajo existente.
+
+### Un ejemplo completo
+
+```lua
+flint.register_command("mayusculas", "Selección a MAYÚSCULAS", function()
+    local sel = flint.selection()
+    if sel == "" then
+        flint.status("No hay nada seleccionado")
+        return
+    end
+    flint.replace_selection(sel:upper())
+    flint.status("Pasado a mayúsculas")
+end)
+
+flint.bind("f6", "mayusculas")
+```
+
+`plugins/ejemplo.lua` trae este y varios más, y sirve de referencia de la API
+entera: va adentro del `.deb` y del `.tar.gz`, y hay un test que verifica que
+siga cargando sin errores.
+
+**Lo que un plugin todavía no puede hacer**: abrir o guardar archivos por su
+cuenta (salvo con `flint.action("save")`), definir un lenguaje nuevo con su
+propio resaltado, ni correr mientras el usuario escribe — un comando solo
+corre cuando se lo invoca, desde la paleta o desde su tecla.
+
+## Ir a la definición y renombrar (LSP)
+
+Las dos necesitan un servidor de lenguaje conectado, y Flint pregunta primero
+si ese servidor las sabe hacer: si no, lo dice en vez de dejarte esperando una
+respuesta que no va a llegar. Al arrancar, la barra de estado avisa cuáles
+quedaron disponibles.
+
+| Tecla | Qué hace |
+|---|---|
+| `Ctrl+]` o `F12` | Ir a donde está definido el nombre bajo el cursor |
+| `F6` | Renombrar el nombre bajo el cursor en todo el proyecto |
+| `D` / `r` en la capa modal NORMAL | Lo mismo, sin `Ctrl` |
+
+También están en la paleta (`Ctrl+P`), que es donde buscarlas si no te acordás
+la tecla.
+
+**Ir a la definición** salta al archivo y la línea donde está definido. Si la
+definición está en otro archivo, lo abre en un buffer nuevo y salta ahí. La
+barra de estado dice de qué línea veniste, para poder volver a mano. Cuando
+hay más de una definición (un *trait* implementado varias veces, por ejemplo)
+salta a la primera y dice cuántas había.
+
+**Renombrar** pide el nombre nuevo, ya escrito con el actual para poder
+retocarlo en vez de escribirlo de cero. El servidor devuelve la lista de
+cambios, que puede tocar varios archivos:
+
+- Los archivos que ya tenías abiertos se editan en su buffer.
+- Los que no, se abren en un buffer nuevo y quedan **sin guardar**. Flint no
+  escribe nada en disco por su cuenta: podés mirar qué cambió, archivo por
+  archivo, y guardar lo que quieras. La barra de estado dice cuántos se
+  tocaron y cuántos quedaron sin guardar.
+- Un `Ctrl+Z` deshace el renombre entero de un archivo, no ocurrencia por
+  ocurrencia.
+- Si el renombre toca más de cincuenta archivos, Flint no lo aplica y lo
+  avisa. No es un límite técnico: es que cincuenta buffers sin guardar ya no
+  son algo que alguien pueda revisar.
+- Si el servidor pide además crear o borrar archivos, Flint corta antes de
+  tocar nada. Aplicar la mitad de un renombre deja el proyecto sin compilar
+  sin que nadie avise.
+
+Antes de cada una de las dos, Flint fuerza la sincronización con el servidor
+sin esperar el margen de medio segundo: si el servidor tuviera una versión
+vieja del archivo, saltaría a donde estaba el símbolo hace un rato.
+
+Una nota sobre `Ctrl+]`: una terminal en modo tradicional no puede
+distinguirlo de `Ctrl+5`, porque las dos mandan el mismo byte. Flint ata las
+dos a lo mismo, así que la tecla clásica funciona; y si escribís `"ctrl+]"` en
+`[keys]` del config.toml, se traduce sola.
 
 ## Autocompletado (LSP)
 
@@ -419,16 +548,79 @@ Los atajos con `Ctrl` (guardar, salir, la paleta) siguen funcionando; cualquier 
 
 ## Lenguajes soportados
 
-| Extensión | Resaltado de sintaxis | Servidor LSP |
+| Lenguaje | Se reconoce por | Servidor LSP |
 |---|---|---|
-| `.rs` | Sí (tree-sitter) | Sí (`rust-analyzer`, instalación guiada si falta; sincronización incremental si el servidor la anuncia) |
-| `.py` | Sí (tree-sitter) | Con `python = "pylsp"` en `[lsp]` — probado: diagnósticos, autocompletado y sincronización incremental |
-| `.json` | Sí (tree-sitter) | El que se configure en `[lsp]` |
-| `.toml` | Sí (tree-sitter) | El que se configure en `[lsp]` (por ejemplo `taplo`) |
-| `.md` / `.markdown` | Sí (tree-sitter, dos gramáticas: bloques e inline) | El que se configure en `[lsp]` |
-| cualquier otra | No — texto plano | No |
+| Rust | `.rs` | `rust-analyzer`, con instalación guiada si falta |
+| Python | `.py` `.pyi`, shebang | Con `python = ["pylsp"]` en `[lsp]` — probado: diagnósticos, autocompletado y sincronización incremental |
+| JavaScript | `.js` `.mjs` `.cjs` `.jsx`, shebang de `node` | `javascript = ["typescript-language-server", "--stdio"]` |
+| TypeScript | `.ts` `.mts` `.cts` | `typescript = ["typescript-language-server", "--stdio"]` |
+| TSX | `.tsx` | `typescriptreact = ["typescript-language-server", "--stdio"]` |
+| Go | `.go` | `gopls`, si está instalado |
+| C | `.c` `.h` | `clangd`, si está instalado |
+| C++ | `.cpp` `.cc` `.cxx` `.hpp` `.hh` `.hxx` | `clangd`, si está instalado |
+| Java | `.java` | El que se configure en `[lsp]` |
+| Lua | `.lua` | `lua-language-server`, si está instalado |
+| Shell | `.sh` `.bash` `.zsh` `.ksh`, `.bashrc` y compañía, shebang | `shellscript = ["bash-language-server", "start"]` |
+| HTML | `.html` `.htm` `.xhtml` | `html = ["vscode-html-language-server", "--stdio"]` |
+| CSS | `.css` | `css = ["vscode-css-language-server", "--stdio"]` |
+| YAML | `.yaml` `.yml` | `yaml = ["yaml-language-server", "--stdio"]` |
+| JSON | `.json` | `json = ["vscode-json-language-server", "--stdio"]` |
+| TOML | `.toml` | `toml = ["taplo", "lsp", "stdio"]` |
+| Markdown | `.md` `.markdown` | El que se configure en `[lsp]` |
+| cualquier otro | — | No |
+
+El lenguaje se decide en este orden: primero el nombre completo del archivo
+(así un `.bashrc`, que no tiene extensión, sale Shell), después la extensión,
+y por último el shebang de la primera línea para los archivos sin extensión.
+`#!/bin/sh`, `#!/usr/bin/env python3` y `#!/usr/bin/env lua5.4` los reconoce;
+al nombre del intérprete le saca la versión del final, porque el número cambia
+con la máquina y el lenguaje no.
+
+### Lenguajes adentro de otros
+
+Un archivo puede tener tramos de otro lenguaje, y se colorean con la gramática
+que les corresponde, no con la del archivo:
+
+| Dónde | Qué se usa adentro |
+|---|---|
+| `<style>` de un HTML | CSS |
+| `<script>` de un HTML | JavaScript |
+| Cerco de código de un Markdown | El lenguaje que declara el cerco (```rust, ```py…) |
+| Bloque HTML dentro de un Markdown | HTML |
+| Encabezado `---` de un Markdown | YAML (y TOML si es `+++`) |
+| Texto de una línea de Markdown | La gramática inline, que es la que sabe de `**negrita**` y links |
+
+Esto sale de la consulta de inyecciones de cada gramática, no de una lista de
+casos escrita a mano: cualquier gramática nueva que traiga la suya funciona
+sola. Si el cerco declara un lenguaje que Flint no tiene, ese bloque se ve
+plano y el resto del documento se colorea igual.
+
+Se siguen hasta tres niveles: un Markdown con un cerco de HTML que adentro
+tiene un `<script>` llega a colorear el JavaScript. Más hondo no aporta, y el
+tope es también lo que evita que una gramática que se inyecte a sí misma
+cuelgue el editor.
+
+Flint arranca solo los servidores que funcionan sin argumentos sobre stdio:
+`rust-analyzer`, `clangd`, `gopls` y `lua-language-server`. Los demás necesitan
+banderas, así que van en `[lsp]` del config.toml con el comando completo, tal
+como aparecen en la tabla. La clave es el identificador del lenguaje, no la
+extensión. Si el servidor no está instalado, Flint lo dice en la barra de
+estado y sigue andando sin él; el resaltado no depende del LSP.
 
 Cualquier extensión no reconocida se edita igual de bien, sin resaltado ni autocompletado — es el comportamiento de "editor de rescate" heredado de la paridad con `nano`.
+
+El resaltado se actualiza mientras escribís, sin esperar a que pares. Cuando
+cambia el texto, Flint no vuelve a analizar el archivo: reusa el árbol de
+sintaxis de la pasada anterior y le aplica solo la edición, y después vuelve a
+consultar únicamente el tramo que tree-sitter marca como cambiado. Por eso una
+tecla cuesta lo mismo en un archivo de diez líneas que en uno de ochenta mil.
+Los cambios que se propagan lejos igual se ven al toque: abrir un `/*` o una
+comilla recolorea todo lo que sigue hasta donde cierre, porque el tramo a
+rehacer lo decide el árbol y no la posición del cursor.
+
+Lo único que sigue costando proporcional al tamaño es la **primera** pasada, al
+abrir el archivo — un archivo de varios MB tarda un momento en tomar color la
+primera vez, y después responde igual que uno chico.
 
 ## Más detalles
 

@@ -21,6 +21,19 @@ pub enum Pending {
         trigger: (usize, usize),
         prefix: String,
     },
+    /// "Ir a la definición". Guarda desde dónde se pidió para poder volver
+    /// con un salto atrás, y el nombre que estaba bajo el cursor, que es lo
+    /// único que se puede decir si el servidor no encuentra nada.
+    Definition {
+        buffer: usize,
+        desde: (usize, usize),
+        palabra: String,
+    },
+    /// "Renombrar". La respuesta es un `WorkspaceEdit`, que puede tocar
+    /// varios archivos a la vez.
+    Rename {
+        nombre: String,
+    },
 }
 
 /// Un cambio de rango para `did_change_incremental` — posiciones en
@@ -157,10 +170,21 @@ impl LspClient {
             "processId": std::process::id(),
             "rootUri": root_uri,
             "capabilities": {
+                "workspace": {
+                    // Sin esto, un servidor puede contestar un renombre en la
+                    // forma vieja (`changes`) o negarse a mandar la nueva
+                    // (`documentChanges`). Flint entiende las dos.
+                    "workspaceEdit": { "documentChanges": true }
+                },
                 "textDocument": {
                     "synchronization": { "didSave": true },
                     "publishDiagnostics": { "relatedInformation": false },
-                    "completion": { "completionItem": { "snippetSupport": false } }
+                    "completion": { "completionItem": { "snippetSupport": false } },
+                    // `linkSupport` deja que el servidor conteste
+                    // `LocationLink`, que trae el rango exacto del nombre
+                    // además del del cuerpo entero de la definición.
+                    "definition": { "linkSupport": true },
+                    "rename": { "prepareSupport": false }
                 }
             }
         });
@@ -254,6 +278,43 @@ impl LspClient {
                 "position": { "line": line, "character": character }
             }),
             Pending::Completion { buffer, trigger, prefix },
+        )
+    }
+
+    pub fn request_definition(
+        &mut self,
+        uri: &str,
+        line: usize,
+        character: usize,
+        buffer: usize,
+        desde: (usize, usize),
+        palabra: String,
+    ) -> io::Result<u64> {
+        self.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            }),
+            Pending::Definition { buffer, desde, palabra },
+        )
+    }
+
+    pub fn request_rename(
+        &mut self,
+        uri: &str,
+        line: usize,
+        character: usize,
+        nombre: &str,
+    ) -> io::Result<u64> {
+        self.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character },
+                "newName": nombre
+            }),
+            Pending::Rename { nombre: nombre.to_string() },
         )
     }
 

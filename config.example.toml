@@ -60,10 +60,22 @@ indent_with_spaces = false
 # Servidores de lenguaje, por identificador LSP del lenguaje. El comando se
 # escribe solo, o como lista si necesita argumentos. Lo que no esté acá usa
 # el servidor que Flint ya trae de fábrica para ese lenguaje (hoy, Rust).
+# La clave es el identificador del lenguaje (el de la tabla del MANUAL), no
+# la extensión. Flint ya arranca solo los que funcionan sin argumentos:
+# rust-analyzer, clangd (C y C++), gopls y lua-language-server. Los de acá
+# abajo necesitan banderas, por eso van escritos completos.
 [lsp]
 rust = "rust-analyzer"
 # python = ["pylsp", "--check-parent-process"]
-# toml = "taplo"
+# typescript = ["typescript-language-server", "--stdio"]
+# javascript = ["typescript-language-server", "--stdio"]
+# typescriptreact = ["typescript-language-server", "--stdio"]
+# shellscript = ["bash-language-server", "start"]
+# html = ["vscode-html-language-server", "--stdio"]
+# css = ["vscode-css-language-server", "--stdio"]
+# yaml = ["yaml-language-server", "--stdio"]
+# json = ["vscode-json-language-server", "--stdio"]
+# toml = ["taplo", "lsp", "stdio"]
 
 # Remapeo de teclas de la capa directa (y de INSERT, que tipean igual). El
 # nombre de cada acción sale de `flint --actions`, y "none" desata la tecla.

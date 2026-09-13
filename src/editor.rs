@@ -175,6 +175,10 @@ pub enum PromptKind {
     /// El archivo cambió en disco desde que se abrió: confirmar antes de
     /// pisar lo que haya escrito el otro proceso.
     OverwriteConfirm { then_quit: bool },
+    /// El nombre nuevo para el símbolo bajo el cursor. Se resuelve en `App`,
+    /// no acá: el servidor de lenguaje puede contestar cambios en varios
+    /// archivos, no solo en este buffer.
+    Rename { palabra: String },
 }
 
 pub enum Mode {
@@ -463,6 +467,39 @@ impl Editor {
 
     pub fn last_edit_instant(&self) -> Option<Instant> {
         self.last_edit_at
+    }
+
+    /// El identificador completo sobre el que está parado el cursor
+    /// primario, mirando para los dos lados. Es distinto de
+    /// `identifier_prefix_before_cursor`, que solo mira hacia atrás: para
+    /// renombrar o ir a la definición hace falta la palabra entera, con el
+    /// cursor donde sea de ella.
+    ///
+    /// Si el cursor no está tocando ninguna, devuelve una cadena vacía: eso
+    /// es "no hay nada que renombrar acá", no un error.
+    pub fn word_under_cursor(&self) -> String {
+        let linea = self.cursor.line.min(self.line_count().saturating_sub(1));
+        let len = self.line_char_len(linea);
+        let chars: Vec<char> = self.rope.line(linea).chars().take(len).collect();
+        let es_parte = |c: char| c.is_alphanumeric() || c == '_';
+        // Con el cursor justo al final de una palabra (el caso de recién
+        // terminar de escribirla) se toma la de la izquierda.
+        let mut i = self.cursor.col.min(chars.len());
+        if (i >= chars.len() || !es_parte(chars[i])) && i > 0 && es_parte(chars[i - 1]) {
+            i -= 1;
+        }
+        if i >= chars.len() || !es_parte(chars[i]) {
+            return String::new();
+        }
+        let mut ini = i;
+        while ini > 0 && es_parte(chars[ini - 1]) {
+            ini -= 1;
+        }
+        let mut fin = i;
+        while fin < chars.len() && es_parte(chars[fin]) {
+            fin += 1;
+        }
+        chars[ini..fin].iter().collect()
     }
 
     /// El identificador que ya está tipeado justo antes del cursor primario
@@ -1776,6 +1813,58 @@ impl Editor {
         self.secondary.clear();
     }
 
+    /// Reemplaza varios rangos a la vez, como un solo paso de deshacer.
+    ///
+    /// Es lo que necesita un renombre del servidor de lenguaje, que no llega
+    /// como una edición del usuario sino como una lista de rangos contra el
+    /// documento tal como está: un `Ctrl+Z` tiene que deshacer el renombre
+    /// entero de este archivo, no ocurrencia por ocurrencia.
+    ///
+    /// Se aplican de atrás para adelante porque todos los rangos están
+    /// expresados contra el documento original: hacerlo de adelante para
+    /// atrás correría los de más abajo y cada uno caería más desalineado que
+    /// el anterior. El protocolo garantiza que no se superponen.
+    ///
+    /// Devuelve cuántos se aplicaron. Cero significa que no se tocó nada y
+    /// tampoco se gastó un paso de deshacer.
+    pub fn replace_ranges(&mut self, cambios: &[(Position, Position, String)]) -> usize {
+        if cambios.is_empty() {
+            return 0;
+        }
+        let mut ordenados: Vec<(usize, usize, &str)> = cambios
+            .iter()
+            .map(|(desde, hasta, texto)| {
+                let ini = self.pos_to_char_idx(self.clamp_position(*desde));
+                let fin = self.pos_to_char_idx(self.clamp_position(*hasta));
+                (ini.min(fin), ini.max(fin), texto.as_str())
+            })
+            .collect();
+        ordenados.sort_by_key(|(ini, _, _)| std::cmp::Reverse(*ini));
+
+        // Un punto de deshacer propio, sin agrupar con lo que el usuario
+        // venía escribiendo: `Other` más el corte del agrupado por tiempo.
+        self.last_edit_kind = None;
+        self.checkpoint(EditKind::Other);
+
+        for (ini, fin, texto) in &ordenados {
+            if fin > ini {
+                self.rope.remove(*ini..*fin);
+            }
+            if !texto.is_empty() {
+                self.rope.insert(*ini, texto);
+            }
+        }
+        // El cursor puede haber quedado más allá del final de su línea si lo
+        // que se reemplazó era más largo que lo que entró.
+        self.clamp_all_selections();
+        // Estas ediciones no son una secuencia de deltas del usuario: la
+        // próxima sincronización manda el documento completo.
+        self.needs_full_lsp_sync = true;
+        self.pending_lsp_edits.clear();
+        self.mark_changed();
+        ordenados.len()
+    }
+
     /// Saca los espacios y tabuladores del final de cada línea. Devuelve si
     /// tocó algo, para que quien llama sepa si hubo edición de verdad (y no
     /// gaste un paso de deshacer ni marque el buffer sucio si no la hubo).
@@ -2664,5 +2753,41 @@ mod tests {
         e.unindent_lines();
         assert!(!e.dirty, "no se tocó el buffer: no debería quedar marcado como sucio");
         assert_eq!(e.rope.to_string(), "sin nada\n");
+    }
+}
+
+#[cfg(test)]
+mod tests_palabra_bajo_cursor {
+    use super::*;
+
+    fn en(texto: &str, line: usize, col: usize) -> String {
+        let mut e = Editor::open(None).expect("editor vacío");
+        e.rope = Rope::from_str(texto);
+        e.cursor = Position { line, col };
+        e.word_under_cursor()
+    }
+
+    #[test]
+    fn agarra_la_palabra_este_donde_este_el_cursor() {
+        let src = "let cuenta_total = 1;\n";
+        // Al principio, en el medio y justo al final de la palabra.
+        assert_eq!(en(src, 0, 4), "cuenta_total");
+        assert_eq!(en(src, 0, 9), "cuenta_total");
+        assert_eq!(en(src, 0, 16), "cuenta_total");
+        // Y la de la izquierda cuando el cursor quedó pegado al final.
+        assert_eq!(en(src, 0, 3), "let");
+    }
+
+    #[test]
+    fn sin_palabra_devuelve_vacio() {
+        assert_eq!(en("  +  \n", 0, 2), "");
+        assert_eq!(en("\n", 0, 0), "");
+        // Más allá del final de la línea.
+        assert_eq!(en("ab\n", 0, 99), "ab");
+    }
+
+    #[test]
+    fn los_acentos_y_el_guion_bajo_son_parte_de_la_palabra() {
+        assert_eq!(en("let año_1 = 2;\n", 0, 5), "año_1");
     }
 }

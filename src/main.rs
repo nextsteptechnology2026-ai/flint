@@ -30,13 +30,6 @@ use editor::{Editor, Layer, Mode, PromptKind};
 use keymap::{Action, KeyChord};
 
 const LSP_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Recalcular el resaltado de sintaxis vuelve a recorrer el archivo entero
-/// (`O(n)`, ver README) — en un archivo grande, hacerlo en cada tecla durante
-/// una tanda de tipeo rápido es trabajo desperdiciado, porque solo el último
-/// resultado importa. Con este margen de espera, una ráfaga de teclas hace
-/// un solo recálculo al final en vez de uno por letra; al abrir un archivo
-/// (sin ediciones todavía) el primer resaltado sigue siendo inmediato.
-const HIGHLIGHT_DEBOUNCE: Duration = Duration::from_millis(120);
 /// Cada cuánto se revisa si `theme.toml` cambió en disco, para recargarlo en
 /// caliente — un segundo es seguido para sentirse "en vivo" sin convertir
 /// cada vuelta del loop principal en un `stat()`.
@@ -135,6 +128,15 @@ struct App {
     /// (`textDocumentSync.change == 2`) al iniciarse — si no, siempre se
     /// manda el documento completo, que es lo único universalmente soportado.
     lsp_incremental: bool,
+    /// Si el servidor anunció que sabe ir a la definición y renombrar. Se
+    /// pregunta antes de pedirlo: mandar una petición que el servidor no
+    /// atiende deja al usuario esperando una respuesta que no va a llegar.
+    lsp_definition: bool,
+    lsp_rename: bool,
+    /// Salta el margen de espera de la sincronización. Se prende solo para
+    /// las peticiones que dependen de que el servidor tenga el texto de
+    /// ahora mismo (ir a la definición, renombrar).
+    lsp_forzar_sync: bool,
     /// true justo después de que la última tecla en modo NORMAL fue `x`, para
     /// que una `x` repetida extienda la selección de línea en vez de reiniciarla.
     last_was_select_line: bool,
@@ -146,6 +148,11 @@ struct App {
     palette_entries: Vec<PaletteEntry>,
     plugin_commands: Vec<plugins::PluginCommand>,
     plugins: Option<plugins::PluginBridge>,
+    /// Teclas que los plugins ataron a un comando propio. Van aparte del
+    /// `Keymap`, que solo sabe de `Action`: acá el valor es el índice del
+    /// comando en `plugin_commands`. Se consultan antes que el perfil, así
+    /// que un plugin puede pisar una tecla de Flint a propósito.
+    plugin_keys: HashMap<(keymap::KeyChord, bool), usize>,
     theme: theme::Theme,
     /// Ruta del `theme.toml` en uso, si vino de un archivo real (no la
     /// paleta de fábrica) — para poder recargarlo en caliente.
@@ -184,17 +191,10 @@ struct App {
     preview_key: Option<(usize, u64, u16)>,
 }
 
+/// El identificador que usa LSP para este lenguaje. Sale de la tabla de
+/// `highlight`, que es donde vive todo lo que Flint sabe de un lenguaje.
 fn lang_id_str(lang: &highlight::Lang) -> &'static str {
-    match lang {
-        highlight::Lang::Rust => "rust",
-        highlight::Lang::Python => "python",
-        highlight::Lang::Json => "json",
-        highlight::Lang::Toml => "toml",
-        // El identificador que usa LSP para este lenguaje. Markdown no tiene
-        // servidor conectado, pero el nombre es el que corresponde por si
-        // alguna vez lo tiene.
-        highlight::Lang::Markdown => "markdown",
-    }
+    lang.id()
 }
 
 /// Comandos fijos de la paleta — lo que Flint ya sabe hacer, además de todo
@@ -228,6 +228,8 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Saltar al paréntesis/llave que hace pareja", Action::JumpMatchingBracket),
         ("Abrir archivo del proyecto… (^T)", Action::FindFilePrompt),
         ("Ir a la línea…", Action::GotoLinePrompt),
+        ("Ir a la definición (^] o F12)", Action::GotoDefinition),
+        ("Renombrar el símbolo… (F6)", Action::RenamePrompt),
         ("Grabar/terminar macro (^U)", Action::MacroRecord),
         ("Repetir la macro (^B)", Action::MacroPlay),
     ];
@@ -259,6 +261,8 @@ const HELP_TEXT: &str = concat!(
     "USO:\n",
     "    flint [opciones] [archivo]\n",
     "\n",
+    "    Un solo archivo por línea de órdenes. Para abrir más, Ctrl+O o Ctrl+T ya estando adentro.\n",
+    "\n",
     "OPCIONES:\n",
     "    --profile <flint|vim|emacs>   Perfil de atajos de teclado (por defecto: flint)\n",
     "    --theme <ruta>                 Archivo de tema .toml (por defecto: ~/.config/flint/theme.toml si existe)\n",
@@ -275,21 +279,32 @@ const HELP_TEXT: &str = concat!(
     "    Ctrl+C/X/V  Copiar/Cortar/Pegar (portapapeles del sistema)\n",
     "    Ctrl+L  Alternar ajuste de línea       Ctrl+K  Comentar/descomentar\n",
     "    Ctrl+U  Grabar/terminar macro          Ctrl+B  Repetir la macro\n",
+    "    Ctrl+E  Vista previa de Markdown (solo en .md/.markdown)\n",
+    "    Ctrl+] o F12   Ir a la definición (LSP)      F6  Renombrar el símbolo (LSP)\n",
+    "    Tab / Shift+Tab   Indentar / des-indentar el bloque seleccionado\n",
+    "    Shift+flechas     Seleccionar (también Shift+Inicio/Fin/RePág/AvPág)\n",
     "    F2      Activar/desactivar la capa modal (NORMAL/INSERT)\n",
     "    Alt+clic  Agregar un cursor donde se hace clic\n",
     "\n",
     "BUFFERS (varios archivos a la vez):\n",
     "    Ctrl+O  Abrir archivo (en un buffer nuevo)     Ctrl+W  Cerrar buffer actual\n",
+    "    Ctrl+T  Buscador difuso de archivos del proyecto (abre en un buffer nuevo)\n",
     "    Ctrl+PageDown/PageUp  Siguiente/anterior buffer\n",
+    "    La barra de pestañas responde al mouse: un clic cambia de buffer.\n",
     "\n",
     "CAPA MODAL — NORMAL (tras F2):\n",
+    "    h/j/k/l   Mover el cursor (las flechas también andan)\n",
     "    w/x   Seleccionar palabra/línea   n     Expandir selección (sintaxis)\n",
+    "    m     Saltar al delimitador que hace pareja\n",
+    "    D     Ir a la definición          r     Renombrar el símbolo\n",
     "    d/c   Borrar/Cambiar              y/p   Copiar/Pegar\n",
     "    i/a/I/A   Insertar (selección/línea)     o/O   Abrir línea abajo/arriba\n",
     "    u/U   Deshacer/Rehacer            Esc   Deseleccionar / volver\n",
     "\n",
-    "La paleta de comandos (Ctrl+P) también tiene \"Buscar (regex)…\" y\n",
-    "\"Reemplazar (regex)…\" — mismo flujo, pero con expresiones regulares.\n",
+    "SOLO DESDE LA PALETA (Ctrl+P), sin tecla propia:\n",
+    "    \"Ir a la línea…\", \"Buscar (regex)…\", \"Reemplazar (regex)…\" y cambiar\n",
+    "    el perfil de teclado. Cada renglón muestra el nombre de su acción, que es\n",
+    "    el que se escribe en [keys] en config.toml para reasignarle una tecla.\n",
     "\n",
     "Manual completo (temas, plugins, perfiles, todos los atajos): ver MANUAL.md\n",
     "en el repositorio del proyecto.\n",
@@ -473,24 +488,31 @@ fn main() -> io::Result<()> {
     }
 
     let plugins_dirs = plugins::default_dirs();
-    let (plugin_host, plugin_commands, plugin_errors) = plugins::PluginBridge::load(&plugins_dirs);
+    let mut carga = plugins::PluginBridge::load(&plugins_dirs);
     let mut palette_entries = builtin_palette_entries();
-    for (i, cmd) in plugin_commands.iter().enumerate() {
+    for (i, cmd) in carga.commands.iter().enumerate() {
         palette_entries.push(PaletteEntry {
             label: format!("{} (plugin)", cmd.label),
             kind: CommandKind::Plugin(i),
         });
     }
-    if !plugin_commands.is_empty() {
+    // Las teclas que pidieron los plugins se resuelven recién acá, con la
+    // lista completa de comandos ya armada: un plugin puede atar una tecla
+    // antes de registrar el comando al que apunta, o apuntar al comando de
+    // otro plugin que se cargue después.
+    let plugin_keys = resolver_binds(&mut keymap, &carga.commands, &carga.binds, &mut carga.errors);
+    if !carga.commands.is_empty() {
         buffer.ed.status = format!(
             "{} · {} comando(s) de plugin",
             buffer.ed.status,
-            plugin_commands.len()
+            carga.commands.len()
         );
     }
-    if let Some(first_error) = plugin_errors.first() {
+    if let Some(first_error) = carga.errors.first() {
         buffer.ed.status = format!("{} · error de plugin: {first_error}", buffer.ed.status);
     }
+    let plugin_commands = carga.commands;
+    let plugin_host = carga.bridge;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -504,8 +526,10 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let lang = buffer.lang;
-    let (lsp_client, doc_uri, lsp_lang_id, lsp_incremental) =
+    let (lsp_client, doc_uri, lsp_lang_id, caps) =
         setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme, &cfg);
+    let (lsp_incremental, lsp_definition, lsp_rename) =
+        (caps.incremental, caps.definition, caps.rename);
     buffer.doc_uri = doc_uri;
     buffer.lsp_lang_id = lsp_lang_id;
 
@@ -517,12 +541,16 @@ fn main() -> io::Result<()> {
         lsp: lsp_client,
         lsp_lang: lsp_lang_id,
         lsp_incremental,
+        lsp_definition,
+        lsp_rename,
+        lsp_forzar_sync: false,
         last_was_select_line: false,
         keymap,
         pending_prefix: None,
         palette_entries,
         plugin_commands,
         plugins: Some(plugin_host),
+        plugin_keys,
         theme,
         theme_path: watched_theme_path,
         theme_mtime,
@@ -563,17 +591,17 @@ fn setup_lsp(
     lang: Option<&highlight::Lang>,
     theme: &theme::Theme,
     cfg: &config::Config,
-) -> (Option<lsp::LspClient>, Option<String>, Option<&'static str>, bool) {
+) -> (Option<lsp::LspClient>, Option<String>, Option<&'static str>, Capacidades) {
     let Some(lang) = lang else {
-        return (None, None, None, false);
+        return (None, None, None, Capacidades::default());
     };
     let Some(partes) = lsp_command_for(cfg, lang) else {
-        return (None, None, None, false);
+        return (None, None, None, Capacidades::default());
     };
     let cmd = partes[0].as_str();
     let cmd_args = &partes[1..];
     let Some(path) = ed.filename.clone() else {
-        return (None, None, None, false);
+        return (None, None, None, Capacidades::default());
     };
     let lang_id = lang_id_str(lang);
     let uri = lsp::file_uri(&path);
@@ -584,19 +612,19 @@ fn setup_lsp(
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             if !prompt_install(terminal, ed, cmd, theme) {
                 ed.status = format!("Sin LSP para este archivo (falta {cmd})");
-                return (None, None, None, false);
+                return (None, None, None, Capacidades::default());
             }
             match lsp::LspClient::spawn(cmd, cmd_args) {
                 Ok(c) => c,
                 Err(e2) => {
                     ed.status = format!("Sigue sin encontrarse {cmd}: {e2}");
-                    return (None, None, None, false);
+                    return (None, None, None, Capacidades::default());
                 }
             }
         }
         Err(e) => {
             ed.status = format!("No se pudo iniciar {cmd}: {e}");
-            return (None, None, None, false);
+            return (None, None, None, Capacidades::default());
         }
     };
 
@@ -605,11 +633,39 @@ fn setup_lsp(
         ui::draw(f, ed, &ui::FrameData::default(), theme);
     });
 
-    let (ok, incremental) = finish_init(&mut client, ed, &uri, &root, lang_id, cmd);
+    let (ok, caps) = finish_init(&mut client, ed, &uri, &root, lang_id, cmd);
     if ok {
-        (Some(client), Some(uri), Some(lang_id), incremental)
+        (Some(client), Some(uri), Some(lang_id), caps)
     } else {
-        (None, None, None, false)
+        (None, None, None, Capacidades::default())
+    }
+}
+
+/// Lo que el servidor dijo que sabe hacer, de lo que a Flint le importa.
+#[derive(Clone, Copy, Default)]
+struct Capacidades {
+    /// `textDocumentSync.change == 2`: se le pueden mandar deltas en vez del
+    /// documento entero.
+    incremental: bool,
+    definition: bool,
+    rename: bool,
+}
+
+impl Capacidades {
+    fn de(result: &Value) -> Capacidades {
+        let caps = result.get("capabilities");
+        // Cada capacidad puede venir como `true` o como un objeto con
+        // opciones; las dos formas significan que la soporta. `false` o
+        // ausente significan que no.
+        let tiene = |nombre: &str| {
+            caps.and_then(|c| c.get(nombre))
+                .is_some_and(|v| v.as_bool() != Some(false) && !v.is_null())
+        };
+        Capacidades {
+            incremental: supports_incremental_sync(result),
+            definition: tiene("definitionProvider"),
+            rename: tiene("renameProvider"),
+        }
     }
 }
 
@@ -625,24 +681,30 @@ fn finish_init(
     root: &str,
     lang_id: &'static str,
     cmd: &str,
-) -> (bool, bool) {
+) -> (bool, Capacidades) {
     let id = match client.initialize(root) {
         Ok(id) => id,
         Err(e) => {
             ed.status = format!("No se pudo hablar con {cmd}: {e}");
-            return (false, false);
+            return (false, Capacidades::default());
         }
     };
     let Some(result) = wait_for_response(client, id, Duration::from_secs(20)) else {
         ed.status = format!("{cmd} no respondió a tiempo; sigo sin LSP");
-        return (false, false);
+        return (false, Capacidades::default());
     };
-    let incremental = supports_incremental_sync(&result);
+    let caps = Capacidades::de(&result);
     let _ = client.send_initialized();
     let _ = client.did_open(uri, lang_id, &ed.rope.to_string());
-    let sync_tag = if incremental { " (sync incremental)" } else { " (sync completo)" };
-    ed.status = format!("{} · {cmd} listo{sync_tag}", ed.status);
-    (true, incremental)
+    let sync_tag = if caps.incremental { " (sync incremental)" } else { " (sync completo)" };
+    let extras = match (caps.definition, caps.rename) {
+        (true, true) => " · definición y renombre",
+        (true, false) => " · definición",
+        (false, true) => " · renombre",
+        (false, false) => "",
+    };
+    ed.status = format!("{} · {cmd} listo{sync_tag}{extras}", ed.status);
+    (true, caps)
 }
 
 /// `textDocumentSync` en la respuesta de `initialize` puede venir como un
@@ -742,14 +804,13 @@ fn prompt_install(
 fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
         {
+            // Sin margen de espera: el resaltado reusa el árbol de la pasada
+            // anterior, así que una tecla cuesta lo que cuesta reanalizar lo
+            // que esa tecla tocó y no el archivo entero. Antes había que
+            // esperar a que la ráfaga de tipeo terminara para no gastar un
+            // recorrido completo por letra.
             let buf = &mut app.buffers[app.active];
-            let quiet_enough = buf
-                .ed
-                .last_edit_instant()
-                .is_none_or(|t| t.elapsed() >= HIGHLIGHT_DEBOUNCE);
-            if quiet_enough {
-                highlight::refresh(&mut buf.ed, buf.highlighter.as_ref());
-            }
+            highlight::refresh(&mut buf.ed, buf.highlighter.as_mut());
         }
         poll_lsp(app);
         sync_lsp_if_needed(app);
@@ -896,8 +957,17 @@ fn handle_lsp_message(app: &mut App, msg: Value) {
     // Respuesta a algo que pedimos nosotros: trae "id", sin "method".
     if let Some(id) = msg.get("id").and_then(Value::as_u64) {
         let pending = app.lsp.as_mut().and_then(|c| c.pending.remove(&id));
-        if let Some(lsp::Pending::Completion { buffer, trigger, prefix }) = pending {
-            apply_completion(app, buffer, trigger, prefix, msg.get("result"));
+        match pending {
+            Some(lsp::Pending::Completion { buffer, trigger, prefix }) => {
+                apply_completion(app, buffer, trigger, prefix, msg.get("result"));
+            }
+            Some(lsp::Pending::Definition { buffer, desde, palabra }) => {
+                aplicar_definicion(app, buffer, desde, &palabra, msg.get("result"));
+            }
+            Some(lsp::Pending::Rename { nombre }) => {
+                aplicar_renombre(app, &nombre, msg.get("result"), msg.get("error"));
+            }
+            _ => {}
         }
     }
 }
@@ -1019,10 +1089,398 @@ fn apply_completion(
     };
 }
 
-/// Sincroniza con el servidor TODOS los buffers con un documento abierto que
-/// tengan cambios pendientes, no solo el activo — si no, un buffer editado y
-/// luego dejado de lado (cambiando a otra pestaña) se quedaría desactualizado
-/// en el servidor hasta volver a él.
+// ---------- ir a la definición y renombrar ----------
+
+/// Una posición de LSP: línea desde 0 y columna en unidades UTF-16.
+fn pos_lsp(v: &Value) -> Option<(usize, usize)> {
+    Some((
+        v.get("line").and_then(Value::as_u64)? as usize,
+        v.get("character").and_then(Value::as_u64)? as usize,
+    ))
+}
+
+/// La ruta de un `file://…`, deshaciendo el `%XX` del camino.
+fn ruta_de_uri(uri: &str) -> Option<PathBuf> {
+    let resto = uri.strip_prefix("file://")?;
+    // Se descarta el "authority" (lo que va entre // y la primera /) porque
+    // para archivos locales siempre está vacío o es "localhost".
+    let resto = match resto.find('/') {
+        Some(0) => resto,
+        Some(i) => &resto[i..],
+        None => return None,
+    };
+    let bytes = resto.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Some(PathBuf::from(String::from_utf8(out).ok()?))
+}
+
+/// Saca de la respuesta a `textDocument/definition` el primer destino y
+/// cuántos había. El protocolo admite tres formas: un `Location`, una lista
+/// de `Location`, o una lista de `LocationLink` (que trae el rango del
+/// nombre además del del cuerpo entero — se prefiere el del nombre, que es
+/// donde uno quiere que caiga el cursor).
+fn primer_destino(result: &Value) -> Option<(String, (usize, usize), usize)> {
+    let lista: Vec<&Value> = match result {
+        Value::Array(a) => a.iter().collect(),
+        Value::Object(_) => vec![result],
+        _ => return None,
+    };
+    let total = lista.len();
+    let v = lista.first()?;
+    if let Some(uri) = v.get("targetUri").and_then(Value::as_str) {
+        let rango = v
+            .get("targetSelectionRange")
+            .or_else(|| v.get("targetRange"))?;
+        let inicio = pos_lsp(rango.get("start")?)?;
+        return Some((uri.to_string(), inicio, total));
+    }
+    let uri = v.get("uri").and_then(Value::as_str)?;
+    let inicio = pos_lsp(v.get("range")?.get("start")?)?;
+    Some((uri.to_string(), inicio, total))
+}
+
+fn aplicar_definicion(
+    app: &mut App,
+    buffer: usize,
+    desde: (usize, usize),
+    palabra: &str,
+    result: Option<&Value>,
+) {
+    let destino = result.and_then(primer_destino);
+    let Some((uri, (linea, col_utf16), total)) = destino else {
+        app.buffers[app.active].ed.status =
+            format!("No encontré dónde se define \"{palabra}\"");
+        return;
+    };
+
+    // El mismo archivo o uno abierto en otra pestaña: se salta ahí. Si no,
+    // se abre en un buffer nuevo.
+    let idx = match app.buffers.iter().position(|b| b.doc_uri.as_deref() == Some(uri.as_str())) {
+        Some(i) => Some(i),
+        None => match ruta_de_uri(&uri) {
+            Some(ruta) => {
+                let antes = app.buffers.len();
+                open_file_into_new_buffer(app, ruta.display().to_string());
+                (app.buffers.len() > antes).then(|| app.buffers.len() - 1)
+            }
+            None => None,
+        },
+    };
+    let Some(idx) = idx else {
+        app.buffers[app.active].ed.status = format!("No pude abrir {uri}");
+        return;
+    };
+
+    app.active = idx;
+    let ed = &mut app.buffers[idx].ed;
+    let linea = linea.min(ed.line_count().saturating_sub(1));
+    let col = ed.utf16_col_to_char(linea, col_utf16);
+    ed.goto_line(linea);
+    ed.cursor.col = col.min(ed.line_char_len(linea));
+    // De dónde se venía, para poder contarlo: no hay lista de saltos
+    // todavía, pero decir la línea de origen ya ahorra tener que acordarse.
+    let volver = if buffer == idx && desde.0 != linea {
+        format!(" (venías de la línea {})", desde.0 + 1)
+    } else {
+        String::new()
+    };
+    let otras = if total > 1 {
+        format!(", {} definiciones en total", total)
+    } else {
+        String::new()
+    };
+    ed.status = format!("Definición de \"{palabra}\" en la línea {}{otras}{volver}", linea + 1);
+}
+
+/// Los cambios de un `WorkspaceEdit`, agrupados por URI. El protocolo admite
+/// dos formas: `changes`, un objeto de URI a lista de ediciones, y
+/// `documentChanges`, una lista que además lleva la versión del documento (y
+/// que puede traer operaciones de archivo — crear, borrar, renombrar — que
+/// Flint no aplica).
+fn cambios_de_workspace_edit(edit: &Value) -> Result<Vec<(String, Vec<Value>)>, String> {
+    let mut out: Vec<(String, Vec<Value>)> = Vec::new();
+    if let Some(cambios) = edit.get("changes").and_then(Value::as_object) {
+        for (uri, ediciones) in cambios {
+            let Some(lista) = ediciones.as_array() else { continue };
+            out.push((uri.clone(), lista.clone()));
+        }
+    }
+    if let Some(docs) = edit.get("documentChanges").and_then(Value::as_array) {
+        for doc in docs {
+            if doc.get("kind").is_some() {
+                // create/rename/delete de archivos. Aplicar la mitad de un
+                // renombre sería peor que no aplicar nada, así que se corta.
+                return Err("el servidor pidió crear o borrar archivos, que Flint no hace".to_string());
+            }
+            let Some(uri) = doc
+                .get("textDocument")
+                .and_then(|t| t.get("uri"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let Some(lista) = doc.get("edits").and_then(Value::as_array) else {
+                continue;
+            };
+            out.push((uri.to_string(), lista.clone()));
+        }
+    }
+    Ok(out)
+}
+
+/// Cuántos archivos puede tocar un renombre antes de que Flint se plante.
+/// No es un límite técnico: es que abrir ciento cincuenta buffers sin
+/// guardar no es una operación que alguien pueda revisar.
+const MAX_ARCHIVOS_RENOMBRE: usize = 50;
+
+fn aplicar_renombre(app: &mut App, nombre: &str, result: Option<&Value>, error: Option<&Value>) {
+    if let Some(e) = error {
+        let msg = e
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("el servidor rechazó el renombre");
+        app.buffers[app.active].ed.status = format!("No se pudo renombrar: {msg}");
+        return;
+    }
+    let Some(edit) = result.filter(|v| !v.is_null()) else {
+        app.buffers[app.active].ed.status =
+            "El servidor no devolvió ningún cambio; el nombre no se tocó".to_string();
+        return;
+    };
+    let cambios = match cambios_de_workspace_edit(edit) {
+        Ok(c) => c,
+        Err(e) => {
+            app.buffers[app.active].ed.status = format!("No se pudo renombrar: {e}");
+            return;
+        }
+    };
+    if cambios.is_empty() {
+        app.buffers[app.active].ed.status = "El servidor no devolvió ningún cambio".to_string();
+        return;
+    }
+    if cambios.len() > MAX_ARCHIVOS_RENOMBRE {
+        app.buffers[app.active].ed.status = format!(
+            "El renombre toca {} archivos, más del tope de {MAX_ARCHIVOS_RENOMBRE}; no lo apliqué",
+            cambios.len()
+        );
+        return;
+    }
+
+    let volver_a = app.active;
+    let mut tocados = 0usize;
+    let mut abiertos = 0usize;
+    let mut fallados: Vec<String> = Vec::new();
+
+    for (uri, ediciones) in cambios {
+        let idx = match app.buffers.iter().position(|b| b.doc_uri.as_deref() == Some(uri.as_str())) {
+            Some(i) => Some(i),
+            None => match ruta_de_uri(&uri) {
+                Some(ruta) if ruta.exists() => {
+                    let antes = app.buffers.len();
+                    open_file_into_new_buffer(app, ruta.display().to_string());
+                    if app.buffers.len() > antes {
+                        abiertos += 1;
+                        Some(app.buffers.len() - 1)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        };
+        let Some(idx) = idx else {
+            fallados.push(uri);
+            continue;
+        };
+        if aplicar_ediciones(&mut app.buffers[idx].ed, &ediciones) {
+            tocados += 1;
+        } else {
+            fallados.push(uri);
+        }
+    }
+
+    app.active = volver_a.min(app.buffers.len().saturating_sub(1));
+    let sin_guardar = if abiertos > 0 {
+        format!(", {abiertos} sin guardar")
+    } else {
+        String::new()
+    };
+    let con_error = if fallados.is_empty() {
+        String::new()
+    } else {
+        format!(" · {} sin poder tocar", fallados.len())
+    };
+    app.buffers[app.active].ed.status = format!(
+        "Renombrado a \"{nombre}\" en {tocados} archivo(s){sin_guardar}{con_error}"
+    );
+}
+
+/// Aplica una lista de `TextEdit` a un buffer, de atrás para adelante.
+///
+/// El orden importa: el protocolo garantiza que los rangos de una misma
+/// lista no se superponen, pero sí están todos expresados contra el
+/// documento original. Aplicarlos de adelante para atrás correría los de
+/// más abajo y cada uno caería un poco más desalineado que el anterior.
+fn aplicar_ediciones(ed: &mut Editor, ediciones: &[Value]) -> bool {
+    /// Un reemplazo tal como lo manda el servidor: desde, hasta y con qué,
+    /// con las posiciones todavía en coordenadas de LSP.
+    type Reemplazo = ((usize, usize), (usize, usize), String);
+
+    let mut rangos: Vec<Reemplazo> = Vec::new();
+    for e in ediciones {
+        let Some(rango) = e.get("range") else { return false };
+        let (Some(inicio), Some(fin)) = (
+            rango.get("start").and_then(pos_lsp),
+            rango.get("end").and_then(pos_lsp),
+        ) else {
+            return false;
+        };
+        let texto = e.get("newText").and_then(Value::as_str).unwrap_or("");
+        rangos.push((inicio, fin, texto.to_string()));
+    }
+    if rangos.is_empty() {
+        return false;
+    }
+    let cambios: Vec<(editor::Position, editor::Position, String)> = rangos
+        .into_iter()
+        .map(|((l0, c0), (l1, c1), texto)| {
+            let l0 = l0.min(ed.line_count().saturating_sub(1));
+            let l1 = l1.min(ed.line_count().saturating_sub(1));
+            (
+                editor::Position { line: l0, col: ed.utf16_col_to_char(l0, c0) },
+                editor::Position { line: l1, col: ed.utf16_col_to_char(l1, c1) },
+                texto,
+            )
+        })
+        .collect();
+    ed.replace_ranges(&cambios) > 0
+}
+
+
+/// Prepara una petición que tiene que salir *ahora*, no cuando venza el
+/// margen de espera del LSP.
+///
+/// Devuelve la URI del documento y la posición del cursor en las unidades que
+/// pide el protocolo, o `None` con el motivo ya puesto en la barra de estado.
+/// Antes de devolverla fuerza la sincronización: si el servidor tiene una
+/// versión vieja del archivo, "ir a la definición" salta a donde estaba el
+/// símbolo hace medio segundo, que es peor que no saltar.
+fn preparar_peticion(app: &mut App, que: &str) -> Option<(String, usize, usize)> {
+    if app.lsp.is_none() {
+        app.buffers[app.active].ed.status =
+            format!("{que} necesita un servidor de lenguaje, y este archivo no tiene");
+        return None;
+    }
+    let Some(uri) = app.buffers[app.active].doc_uri.clone() else {
+        app.buffers[app.active].ed.status =
+            format!("{que} necesita que el archivo esté abierto en el servidor");
+        return None;
+    };
+    sync_lsp_ahora(app);
+    let ed = &app.buffers[app.active].ed;
+    let linea = ed.cursor.line;
+    let col = ed.char_col_to_utf16(linea, ed.cursor.col);
+    Some((uri, linea, col))
+}
+
+/// Igual que `sync_lsp_if_needed` pero sin esperar el margen: se usa justo
+/// antes de una petición que depende de que el servidor tenga el texto de
+/// ahora.
+fn sync_lsp_ahora(app: &mut App) {
+    let anterior = app.lsp_forzar_sync;
+    app.lsp_forzar_sync = true;
+    sync_lsp_if_needed(app);
+    app.lsp_forzar_sync = anterior;
+}
+
+fn goto_definition(app: &mut App) {
+    if !app.lsp_definition {
+        app.buffers[app.active].ed.status =
+            "El servidor de lenguaje no sabe ir a la definición".to_string();
+        return;
+    }
+    let palabra = app.buffers[app.active].ed.word_under_cursor();
+    if palabra.is_empty() {
+        app.buffers[app.active].ed.status = "El cursor no está sobre ningún nombre".to_string();
+        return;
+    }
+    let Some((uri, linea, col)) = preparar_peticion(app, "Ir a la definición") else {
+        return;
+    };
+    let desde = {
+        let ed = &app.buffers[app.active].ed;
+        (ed.cursor.line, ed.cursor.col)
+    };
+    let activo = app.active;
+    let enviado = app
+        .lsp
+        .as_mut()
+        .map(|c| c.request_definition(&uri, linea, col, activo, desde, palabra.clone()))
+        .transpose();
+    match enviado {
+        Ok(_) => {
+            app.buffers[app.active].ed.status = format!("Buscando dónde se define \"{palabra}\"…")
+        }
+        Err(e) => app.buffers[app.active].ed.status = format!("No pude preguntarle al servidor: {e}"),
+    }
+}
+
+fn rename_prompt(app: &mut App) {
+    if !app.lsp_rename {
+        app.buffers[app.active].ed.status =
+            "El servidor de lenguaje no sabe renombrar".to_string();
+        return;
+    }
+    let palabra = app.buffers[app.active].ed.word_under_cursor();
+    if palabra.is_empty() {
+        app.buffers[app.active].ed.status = "El cursor no está sobre ningún nombre".to_string();
+        return;
+    }
+    app.buffers[app.active].ed.mode = Mode::Prompt {
+        label: format!("Renombrar \"{palabra}\" a: "),
+        // Arranca con el nombre actual escrito: renombrar casi siempre es
+        // retocar lo que ya está, no escribirlo de cero.
+        buffer: palabra.clone(),
+        kind: PromptKind::Rename { palabra },
+    };
+}
+
+fn pedir_renombre(app: &mut App, palabra: String, nuevo: String) {
+    let nuevo = nuevo.trim().to_string();
+    if nuevo.is_empty() || nuevo == palabra {
+        app.buffers[app.active].ed.status = "Renombre cancelado".to_string();
+        return;
+    }
+    let Some((uri, linea, col)) = preparar_peticion(app, "Renombrar") else {
+        return;
+    };
+    let enviado = app
+        .lsp
+        .as_mut()
+        .map(|c| c.request_rename(&uri, linea, col, &nuevo))
+        .transpose();
+    match enviado {
+        Ok(_) => {
+            app.buffers[app.active].ed.status =
+                format!("Renombrando \"{palabra}\" a \"{nuevo}\"…")
+        }
+        Err(e) => app.buffers[app.active].ed.status = format!("No pude preguntarle al servidor: {e}"),
+    }
+}
+
 /// Sincroniza cada buffer con documento abierto que tenga cambios
 /// pendientes. Cuando lo que se acumuló desde la última vez es una sola
 /// edición por vez (el caso común: tipear, borrar, con un cursor) y el
@@ -1040,10 +1498,11 @@ fn sync_lsp_if_needed(app: &mut App) {
         if buf.ed.content_version == buf.lsp_synced_version {
             continue;
         }
-        let quiet_enough = buf
-            .ed
-            .last_edit_instant()
-            .is_none_or(|t| t.elapsed() >= LSP_DEBOUNCE);
+        let quiet_enough = app.lsp_forzar_sync
+            || buf
+                .ed
+                .last_edit_instant()
+                .is_none_or(|t| t.elapsed() >= LSP_DEBOUNCE);
         if !quiet_enough {
             continue;
         }
@@ -1203,6 +1662,15 @@ fn handle_layer_key(app: &mut App, key: KeyEvent, page_size: usize) {
         } else {
             app.buffers[app.active].ed.status = "Secuencia cancelada".to_string();
         }
+        return;
+    }
+
+    // Las teclas de los plugins se miran antes que el perfil: un plugin que
+    // ata Ctrl+J la pisa a propósito, y si se mirara después nunca ganaría
+    // contra una tecla que Flint ya usa.
+    let modal = matches!(app.buffers[app.active].ed.layer, Layer::ModalNormal);
+    if let Some(&i) = app.plugin_keys.get(&(chord, modal)) {
+        run_plugin_command(app, i);
         return;
     }
 
@@ -1491,6 +1959,8 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
                 label: "Ir a la línea: ".to_string(),
             };
         }
+        Action::GotoDefinition => goto_definition(app),
+        Action::RenamePrompt => rename_prompt(app),
         Action::ToggleComment => toggle_comment(app),
         Action::ToggleWrap => {
             let ed = &mut app.buffers[app.active].ed;
@@ -1911,30 +2381,158 @@ fn run_palette_command(app: &mut App, idx: usize) {
     }
 }
 
-fn run_plugin_command(app: &mut App, i: usize) {
-    let Some(bridge) = app.plugins.as_ref() else {
-        return;
-    };
-    let Some(cmd) = app.plugin_commands.get(i) else {
-        return;
-    };
-    let filename = app.buffers[app.active]
-        .ed
-        .filename
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let line_count = app.buffers[app.active].ed.line_count();
-    match bridge.invoke(cmd, &filename, line_count) {
-        Ok((status, inserts)) => {
-            for text in inserts {
-                for c in text.chars() {
-                    app.buffers[app.active].ed.insert_char(c);
+/// Resuelve las teclas que pidieron los plugins. Un destino puede ser el id
+/// de un comando de plugin o el nombre de una acción de Flint, y se busca en
+/// ese orden: el plugin conoce sus propios ids, así que si eligió uno que
+/// además es el nombre de una acción, gana el suyo (y se avisa, porque casi
+/// seguro no era la intención).
+fn resolver_binds(
+    keymap: &mut keymap::Keymap,
+    commands: &[plugins::PluginCommand],
+    binds: &[plugins::PluginBind],
+    errors: &mut Vec<String>,
+) -> HashMap<(keymap::KeyChord, bool), usize> {
+    let mut out = HashMap::new();
+    for bind in binds {
+        let chord = match keymap::parse_chord(&bind.tecla) {
+            Ok(c) => c,
+            Err(e) => {
+                errors.push(format!("flint.bind: {e}"));
+                continue;
+            }
+        };
+        if let Some(i) = commands.iter().position(|c| c.id == bind.destino) {
+            if Action::from_name(&bind.destino).is_some() {
+                errors.push(format!(
+                    "flint.bind(\"{}\"): el comando \"{}\" se llama igual que una acción de Flint; se ató el del plugin",
+                    bind.tecla, bind.destino
+                ));
+            }
+            out.insert((chord, bind.modal), i);
+            continue;
+        }
+        match Action::from_name(&bind.destino) {
+            Some(action) => {
+                if bind.modal {
+                    keymap::rebind_normal(keymap, chord, Some(action));
+                } else {
+                    keymap::rebind_direct(keymap, chord, Some(action));
                 }
             }
-            app.buffers[app.active].ed.status = status.unwrap_or_else(|| "Comando de plugin ejecutado".to_string());
+            None => errors.push(format!(
+                "flint.bind(\"{}\"): no existe el comando ni la acción \"{}\"",
+                bind.tecla, bind.destino
+            )),
         }
-        Err(e) => app.buffers[app.active].ed.status = format!("Error en el plugin \"{}\": {e}", cmd.id),
+    }
+    out
+}
+
+fn run_plugin_command(app: &mut App, i: usize) {
+    if app.plugins.is_none() || app.plugin_commands.get(i).is_none() {
+        return;
+    }
+    let ctx = plugin_context(app);
+    // El puente y el comando salen de `app` justo para la llamada: el script
+    // no toca el editor, así que no hace falta que los dos préstamos vivan a
+    // la vez que las mutaciones de después.
+    let resultado = {
+        let bridge = app.plugins.as_ref().expect("recién comprobado");
+        let cmd = &app.plugin_commands[i];
+        bridge.invoke(cmd, ctx)
+    };
+    match resultado {
+        Ok(efectos) => {
+            let mut dijo_algo = false;
+            for efecto in efectos {
+                if aplicar_efecto(app, efecto) {
+                    dijo_algo = true;
+                }
+            }
+            if !dijo_algo {
+                app.buffers[app.active].ed.status = "Comando de plugin ejecutado".to_string();
+            }
+        }
+        Err(e) => {
+            let id = app.plugin_commands[i].id.clone();
+            app.buffers[app.active].ed.status = format!("Error en el plugin \"{id}\": {e}");
+        }
+    }
+}
+
+/// La foto del editor que ve un comando de plugin.
+fn plugin_context(app: &mut App) -> plugins::PluginContext {
+    let clipboard = get_clipboard_text(app).unwrap_or_default();
+    let ed = &app.buffers[app.active].ed;
+    plugins::PluginContext {
+        filename: ed
+            .filename
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        language: app.buffers[app.active]
+            .lang
+            .map(|l| l.id().to_string())
+            .unwrap_or_default(),
+        line_count: ed.line_count(),
+        // De 0 a 1: adentro Flint cuenta desde 0, pero la API de plugins
+        // cuenta desde 1, que es lo que muestra la barra de estado y lo que
+        // espera cualquiera que escriba Lua.
+        cursor_line: ed.cursor.line + 1,
+        cursor_col: ed.cursor.col + 1,
+        selection: ed.selected_text().unwrap_or_default(),
+        text: ed.rope.to_string(),
+        clipboard,
+    }
+}
+
+/// Aplica un pedido de un plugin. Devuelve si dejó un texto en la barra de
+/// estado, para no pisarlo después con el aviso genérico.
+fn aplicar_efecto(app: &mut App, efecto: plugins::PluginEffect) -> bool {
+    use plugins::PluginEffect as E;
+    match efecto {
+        E::Status(texto) => {
+            app.buffers[app.active].ed.status = texto;
+            true
+        }
+        E::InsertText(texto) => {
+            for c in texto.chars() {
+                app.buffers[app.active].ed.insert_char(c);
+            }
+            false
+        }
+        E::ReplaceSelection(texto) => {
+            app.buffers[app.active].ed.delete_selection_action();
+            for c in texto.chars() {
+                app.buffers[app.active].ed.insert_char(c);
+            }
+            false
+        }
+        E::SetClipboard(texto) => {
+            set_clipboard(app, texto);
+            false
+        }
+        E::SetCursor { line, col } => {
+            // De 1 a 0, la inversa de `plugin_context`.
+            app.buffers[app.active].ed.goto_line(line.saturating_sub(1));
+            let max = app.buffers[app.active]
+                .ed
+                .line_char_len(app.buffers[app.active].ed.cursor.line);
+            app.buffers[app.active].ed.cursor.col = col.saturating_sub(1).min(max);
+            false
+        }
+        E::Action(nombre) => match Action::from_name(&nombre) {
+            Some(action) => {
+                let page_size = app.text_area.height.max(1) as usize;
+                dispatch_action(app, action, page_size);
+                false
+            }
+            None => {
+                app.buffers[app.active].ed.status =
+                    format!("El plugin pidió la acción \"{nombre}\", que no existe");
+                true
+            }
+        },
     }
 }
 
@@ -2130,27 +2728,45 @@ fn normal_open_above(app: &mut App) {
 /// nodo padre si ya coincide con uno exacto. Cada cursor sube por su propia
 /// rama del árbol de forma independiente.
 fn normal_expand_selection(app: &mut App) {
-    let Some(highlighter) = app.buffers[app.active].highlighter.as_ref() else {
-        app.buffers[app.active].ed.status = "Sin árbol de sintaxis para este archivo".to_string();
+    let idx = app.active;
+    let buf = &app.buffers[idx];
+    let Some(highlighter) = buf.highlighter.as_ref() else {
+        app.buffers[idx].ed.status = "Sin árbol de sintaxis para este archivo".to_string();
         return;
     };
-    let text = app.buffers[app.active].ed.rope.to_string();
-    let Some(tree) = highlighter.parse(&text) else {
-        app.buffers[app.active].ed.status = "No se pudo analizar el archivo".to_string();
-        return;
+    // El árbol que el resaltado ya tiene en caché sirve tal cual mientras el
+    // buffer no haya cambiado desde esa pasada, que acá es lo normal: en
+    // NORMAL no se está escribiendo. Solo si no corresponde se analiza de
+    // nuevo el archivo entero, que es lo que antes pasaba siempre.
+    let propio;
+    let tree = match highlighter.arbol_de(&buf.ed.rope) {
+        Some(t) => t,
+        None => {
+            let text = buf.ed.rope.to_string();
+            match highlighter.parse(&text) {
+                Some(t) => {
+                    propio = t;
+                    &propio
+                }
+                None => {
+                    app.buffers[idx].ed.status = "No se pudo analizar el archivo".to_string();
+                    return;
+                }
+            }
+        }
     };
 
-    let mut sels = app.buffers[app.active].ed.selections_snapshot();
-    let len_chars = app.buffers[app.active].ed.rope.len_chars();
+    let mut sels = buf.ed.selections_snapshot();
+    let len_chars = buf.ed.rope.len_chars();
     let mut changed = 0;
     for sel in sels.iter_mut() {
-        let (start_char, end_char) = app.buffers[app.active].ed.selection_char_range(*sel);
+        let (start_char, end_char) = buf.ed.selection_char_range(*sel);
         let end_char = end_char.max(start_char + 1).min(len_chars);
-        let start_byte = app.buffers[app.active].ed.rope.char_to_byte(start_char);
-        let end_byte = app.buffers[app.active].ed.rope.char_to_byte(end_char);
-        if let Some((nb_start, nb_end)) = highlight::expand_selection(&tree, start_byte, end_byte) {
-            let new_start = app.buffers[app.active].ed.position_from_char_idx(app.buffers[app.active].ed.rope.byte_to_char(nb_start));
-            let new_end = app.buffers[app.active].ed.position_from_char_idx(app.buffers[app.active].ed.rope.byte_to_char(nb_end));
+        let start_byte = buf.ed.rope.char_to_byte(start_char);
+        let end_byte = buf.ed.rope.char_to_byte(end_char);
+        if let Some((nb_start, nb_end)) = highlight::expand_selection(tree, start_byte, end_byte) {
+            let new_start = buf.ed.position_from_char_idx(buf.ed.rope.byte_to_char(nb_start));
+            let new_end = buf.ed.position_from_char_idx(buf.ed.rope.byte_to_char(nb_end));
             *sel = editor::Selection {
                 anchor: new_start,
                 cursor: new_end,
@@ -2158,8 +2774,9 @@ fn normal_expand_selection(app: &mut App) {
             changed += 1;
         }
     }
-    app.buffers[app.active].ed.apply_selections(sels);
-    app.buffers[app.active].ed.status = if changed > 0 {
+    let ed = &mut app.buffers[idx].ed;
+    ed.apply_selections(sels);
+    ed.status = if changed > 0 {
         "Selección expandida al nodo padre".to_string()
     } else {
         "No se pudo expandir la selección".to_string()
@@ -2400,6 +3017,7 @@ fn submit_prompt(app: &mut App, kind: PromptKind, buffer: String) {
     match kind {
         PromptKind::OpenFile => open_file_into_new_buffer(app, buffer),
         PromptKind::SaveAs { then_quit } => handle_save_as(app, then_quit, buffer),
+        PromptKind::Rename { palabra } => pedir_renombre(app, palabra, buffer),
         other => submit_prompt_editor(&mut app.buffers[app.active].ed, other, buffer),
     }
 }
@@ -2461,6 +3079,10 @@ fn redetect_language(app: &mut App, idx: usize, path: &Path) {
 
 fn submit_prompt_editor(ed: &mut Editor, kind: PromptKind, buffer: String) {
     match kind {
+        // `Rename` lo atiende `submit_prompt`, que tiene acceso a `App`: el
+        // servidor puede devolver cambios en varios archivos, no solo en
+        // este buffer. Acá no llega nunca.
+        PromptKind::Rename { .. } => {}
         PromptKind::GotoLine => match buffer.trim().parse::<usize>() {
             // Se cuenta desde 1 porque es como se cuenta en la barra de
             // estado y en cualquier mensaje de error de un compilador.
@@ -2708,5 +3330,167 @@ mod tests {
 
         // Sin label no hay entrada posible.
         assert!(completion_entry_from(&json!({ "detail": "x" })).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests_lsp_definicion_y_renombre {
+    //! Lo que se prueba acá es el traductor entre lo que manda un servidor
+    //! LSP y lo que hace Flint. Es donde están los errores de verdad: el
+    //! protocolo admite tres formas de contestar dónde está una definición y
+    //! dos de contestar un renombre, y las columnas vienen en UTF-16.
+    use super::*;
+    use serde_json::json;
+
+    fn editor_con(texto: &str) -> Editor {
+        let mut e = Editor::open(None).expect("editor vacío");
+        e.rope = ropey::Rope::from_str(texto);
+        e
+    }
+
+    #[test]
+    fn entiende_las_tres_formas_de_contestar_una_definicion() {
+        // Un Location suelto.
+        let uno = json!({"uri": "file:///a.rs", "range": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 9}}});
+        assert_eq!(
+            primer_destino(&uno),
+            Some(("file:///a.rs".to_string(), (3, 7), 1))
+        );
+
+        // Una lista de Location: se toma el primero y se cuentan todos.
+        let lista = json!([uno, {"uri": "file:///b.rs", "range": {"start": {"line": 9, "character": 0}, "end": {"line": 9, "character": 1}}}]);
+        assert_eq!(
+            primer_destino(&lista),
+            Some(("file:///a.rs".to_string(), (3, 7), 2))
+        );
+
+        // Una lista de LocationLink: gana targetSelectionRange (el nombre)
+        // sobre targetRange (el cuerpo entero), que es donde uno quiere que
+        // caiga el cursor.
+        let link = json!([{
+            "targetUri": "file:///c.rs",
+            "targetRange": {"start": {"line": 10, "character": 0}, "end": {"line": 20, "character": 0}},
+            "targetSelectionRange": {"start": {"line": 10, "character": 4}, "end": {"line": 10, "character": 8}}
+        }]);
+        assert_eq!(
+            primer_destino(&link),
+            Some(("file:///c.rs".to_string(), (10, 4), 1))
+        );
+
+        // Y lo que no es ninguna de las tres.
+        assert_eq!(primer_destino(&Value::Null), None);
+        assert_eq!(primer_destino(&json!([])), None);
+    }
+
+    #[test]
+    fn la_uri_vuelve_a_ser_una_ruta() {
+        assert_eq!(
+            ruta_de_uri("file:///home/x/main.rs"),
+            Some(PathBuf::from("/home/x/main.rs"))
+        );
+        // Con caracteres escapados, que es como salen los espacios y los
+        // acentos de `file_uri`.
+        assert_eq!(
+            ruta_de_uri("file:///home/x/mis%20cosas/a%C3%B1o.rs"),
+            Some(PathBuf::from("/home/x/mis cosas/año.rs"))
+        );
+        assert_eq!(ruta_de_uri("http://ejemplo.cl/a.rs"), None);
+        // Ida y vuelta contra el generador de URIs de Flint.
+        let p = PathBuf::from("/tmp/con espacio/ñ.rs");
+        assert_eq!(ruta_de_uri(&lsp::file_uri(&p)), Some(p));
+    }
+
+    #[test]
+    fn entiende_las_dos_formas_de_contestar_un_renombre() {
+        let edicion = json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "newText": "z"});
+
+        let viejo = json!({"changes": {"file:///a.rs": [edicion]}});
+        let c = cambios_de_workspace_edit(&viejo).expect("se entiende");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, "file:///a.rs");
+
+        let nuevo = json!({"documentChanges": [
+            {"textDocument": {"uri": "file:///b.rs", "version": 3}, "edits": [edicion]}
+        ]});
+        let c = cambios_de_workspace_edit(&nuevo).expect("se entiende");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, "file:///b.rs");
+    }
+
+    #[test]
+    fn un_renombre_que_pide_tocar_archivos_se_rechaza_entero() {
+        // Crear o borrar archivos Flint no lo hace. Aplicar la mitad del
+        // renombre y saltearse esa parte dejaría el proyecto sin compilar
+        // sin que nadie lo avise, así que se corta antes de tocar nada.
+        let con_archivos = json!({"documentChanges": [
+            {"kind": "create", "uri": "file:///nuevo.rs"},
+            {"textDocument": {"uri": "file:///b.rs"}, "edits": []}
+        ]});
+        assert!(cambios_de_workspace_edit(&con_archivos).is_err());
+    }
+
+    #[test]
+    fn aplicar_varias_ediciones_no_las_desalinea() {
+        // Todas las ediciones vienen contra el documento original. Si se
+        // aplicaran de arriba para abajo, la segunda caería corrida por lo
+        // que cambió de largo la primera.
+        let mut ed = editor_con("uno dos uno\nuno\n");
+        let ediciones = vec![
+            json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}}, "newText": "TRESMIL"}),
+            json!({"range": {"start": {"line": 0, "character": 8}, "end": {"line": 0, "character": 11}}, "newText": "TRESMIL"}),
+            json!({"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}}, "newText": "TRESMIL"}),
+        ];
+        assert!(aplicar_ediciones(&mut ed, &ediciones));
+        assert_eq!(ed.rope.to_string(), "TRESMIL dos TRESMIL\nTRESMIL\n");
+    }
+
+    #[test]
+    fn un_renombre_entero_se_deshace_de_una() {
+        // Tres ocurrencias en el archivo, un solo Ctrl+Z.
+        let mut ed = editor_con("a a a\n");
+        let ediciones: Vec<Value> = (0..3)
+            .map(|i| {
+                let c = i * 2;
+                json!({"range": {"start": {"line": 0, "character": c}, "end": {"line": 0, "character": c + 1}}, "newText": "bb"})
+            })
+            .collect();
+        assert!(aplicar_ediciones(&mut ed, &ediciones));
+        assert_eq!(ed.rope.to_string(), "bb bb bb\n");
+        assert!(ed.undo());
+        assert_eq!(ed.rope.to_string(), "a a a\n");
+    }
+
+    #[test]
+    fn las_columnas_del_servidor_vienen_en_utf16() {
+        // Un emoji ocupa dos unidades UTF-16 y un solo carácter. Si se
+        // tomaran las columnas como caracteres, el reemplazo caería corrido.
+        let mut ed = editor_con("let 🌞x = 1;\n");
+        let ediciones = vec![json!({
+            "range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 7}},
+            "newText": "y"
+        })];
+        assert!(aplicar_ediciones(&mut ed, &ediciones));
+        assert_eq!(ed.rope.to_string(), "let 🌞y = 1;\n");
+    }
+
+    #[test]
+    fn una_lista_de_ediciones_vacia_no_gasta_un_paso_de_deshacer() {
+        let mut ed = editor_con("hola\n");
+        assert!(!aplicar_ediciones(&mut ed, &[]));
+        assert!(!ed.dirty, "no tendría que haber marcado el buffer como sucio");
+        assert!(!ed.undo(), "no tendría que haber nada que deshacer");
+    }
+
+    #[test]
+    fn las_capacidades_se_leen_en_sus_dos_formas() {
+        // `true` a secas y un objeto con opciones significan lo mismo.
+        let a = json!({"capabilities": {"definitionProvider": true, "renameProvider": {"prepareProvider": true}}});
+        let c = Capacidades::de(&a);
+        assert!(c.definition && c.rename);
+
+        // `false` y ausente significan que no.
+        let b = json!({"capabilities": {"definitionProvider": false}});
+        let c = Capacidades::de(&b);
+        assert!(!c.definition && !c.rename);
     }
 }
