@@ -1,7 +1,7 @@
 # Publica una release con binarios ya compilados cuando se empuja una
 # etiqueta `vX.Y.Z`. Quien la instale no necesita tener Rust: para eso están
-# el `.deb` (Debian/Ubuntu/Kali) y el tar.gz con el binario suelto para
-# cualquier otra distro de Linux x86_64.
+# el `.deb` (Debian/Ubuntu/Kali), los tar.gz con el binario suelto para Linux
+# y macOS, y el instalador de una línea que elige el que corresponde.
 #
 # Igual que el CI, sin acciones de terceros: `gh` ya viene instalado en el
 # runner y se autentica con el token del propio workflow.
@@ -16,16 +16,18 @@ permissions:
   contents: write
 
 jobs:
-  publicar:
-    name: Compilar y publicar
+  # Una etiqueta v0.1.4 sobre un Cargo.toml que dice 0.1.3 publicaría un
+  # paquete cuyo nombre y versión interna no coinciden con la release. Se
+  # revisa una sola vez, antes de compilar nada: fallar acá cuesta segundos,
+  # fallar después de tres compilaciones cuesta diez minutos.
+  verificar:
+    name: La etiqueta coincide con Cargo.toml
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      # Una etiqueta v0.1.4 sobre un Cargo.toml que dice 0.1.3 publicaría un
-      # paquete cuyo nombre y versión interna no coinciden con la release.
-      # Mejor fallar acá, ruidosamente, que publicarlo.
-      - name: La etiqueta tiene que coincidir con Cargo.toml
+      - id: v
         run: |
           version="${GITHUB_REF_NAME#v}"
           cargo_version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
@@ -33,37 +35,99 @@ jobs:
             echo "::error::La etiqueta $GITHUB_REF_NAME dice $version y Cargo.toml dice $cargo_version"
             exit 1
           fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      # No se publica algo que no pasa sus propias pruebas.
+  construir:
+    name: Compilar (${{ matrix.nombre }})
+    needs: verificar
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # Que falle uno no cancela a los otros: así una release a medias se ve
+      # entera en el log en vez de descubrir los problemas de a uno.
+      fail-fast: false
+      matrix:
+        include:
+          - nombre: x86_64-linux
+            runner: ubuntu-latest
+            deb: true
+          - nombre: x86_64-macos
+            runner: macos-13
+            deb: false
+          - nombre: aarch64-macos
+            runner: macos-14
+            deb: false
+    env:
+      VERSION: ${{ needs.verificar.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # No se publica algo que no pasa sus propias pruebas, y se prueban en
+      # cada plataforma: las gramáticas de tree-sitter son C compilado acá.
       - name: Tests
         run: cargo test --locked
 
       - name: Construir el .deb
+        if: matrix.deb
         run: bash packaging/build-deb.sh
 
-      # El .deb solo sirve en Debian y derivadas; el tar.gz es para cualquier
-      # otra distro x86_64. Lleva la documentación y el tema de ejemplo para
-      # que sea autocontenido, igual que el paquete.
+      # El .deb solo sirve en Debian y derivadas; el tar.gz es para todo lo
+      # demás. Lleva la documentación y el tema de ejemplo para que sea
+      # autocontenido, igual que el paquete.
       - name: Empaquetar el binario suelto
         run: |
-          dir="flint-${VERSION}-x86_64-linux"
+          cargo build --release --locked
+          dir="flint-${VERSION}-${{ matrix.nombre }}"
           mkdir -p "dist/$dir"
           cp target/release/flint "dist/$dir/"
-          strip --strip-unneeded "dist/$dir/flint"
-          cp README.md MANUAL.md LICENSE theme.example.toml "dist/$dir/"
+          strip "dist/$dir/flint"
+          cp README.md MANUAL.md LICENSE theme.example.toml config.example.toml "dist/$dir/"
           cp -a plugins "dist/$dir/"
           tar -czf "dist/$dir.tar.gz" -C dist "$dir"
-          sha256sum "dist/$dir.tar.gz" target/deb/flint_*.deb > dist/sha256sums.txt
-          cat dist/sha256sums.txt
+          rm -rf "dist/$dir"
+          if [ "${{ matrix.deb }}" = "true" ]; then
+            cp target/deb/flint_*_amd64.deb dist/
+          fi
+          ls -l dist/
 
-      - name: Publicar la release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.nombre }}
+          path: dist/
+          if-no-files-found: error
+
+  publicar:
+    name: Publicar la release
+    needs: [verificar, construir]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.verificar.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: bajados
+          merge-multiple: true
+
+      - name: Juntar todo y calcular los sha256
+        run: |
+          mkdir -p dist
+          find bajados -type f -exec cp {} dist/ \;
+          cd dist
+          sha256sum ./* > sha256sums.txt
+          cat sha256sums.txt
+
+      # La fórmula de Homebrew se genera acá y no a mano: necesita el sha256
+      # de cada tar.gz, que recién existe ahora. Sale como archivo de la
+      # release, lista para copiar al tap.
+      - name: Generar la fórmula de Homebrew
+        run: bash packaging/homebrew-formula.sh "$VERSION" dist > dist/flint.rb
+
+      - name: Publicar
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "Flint $GITHUB_REF_NAME" \
             --generate-notes \
-            target/deb/flint_*_amd64.deb \
-            "dist/flint-${VERSION}-x86_64-linux.tar.gz" \
-            dist/sha256sums.txt
+            dist/*

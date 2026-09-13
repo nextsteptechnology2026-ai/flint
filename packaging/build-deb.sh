@@ -28,7 +28,7 @@ mkdir -p \
 install -m 755 target/release/flint "$PKG_DIR/usr/bin/flint"
 strip --strip-unneeded "$PKG_DIR/usr/bin/flint"
 
-install -m 644 README.md MANUAL.md theme.example.toml "$PKG_DIR/usr/share/doc/flint/"
+install -m 644 README.md MANUAL.md theme.example.toml config.example.toml "$PKG_DIR/usr/share/doc/flint/"
 cp -a plugins/. "$PKG_DIR/usr/share/flint/plugins/"
 
 # Dependencias reales del binario (libc/libgcc, ninguna más — arboard habla
