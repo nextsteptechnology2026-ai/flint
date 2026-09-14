@@ -17,24 +17,24 @@
 class Flint < Formula
   desc "Editor de terminal con capa modal opcional, LSP y multi-cursor"
   homepage "https://github.com/nextsteptechnology2026-ai/flint"
-  version "0.3.0"
+  version "0.4.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.3.0/flint-0.3.0-aarch64-macos.tar.gz"
-      sha256 "9e1c0745564b991d9d3be60030516721d01fa6a6adea776d6727e63e87bf401f"
+      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.4.0/flint-0.4.0-aarch64-macos.tar.gz"
+      sha256 "85ba281172a08f3bc4d9ec7946d3483671158c7c7505d905b8a46e333ed98421"
     end
     on_intel do
-      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.3.0/flint-0.3.0-x86_64-macos.tar.gz"
-      sha256 "ca137cfbd7b0838747f604bb523b241a6e963d1a9f5a7fc501d1d69cd89f4c9c"
+      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.4.0/flint-0.4.0-x86_64-macos.tar.gz"
+      sha256 "8436ec8f0023811a1f80cba7076fb80e96fb32427fa5750e8b958f3f9f6c291f"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.3.0/flint-0.3.0-x86_64-linux.tar.gz"
-      sha256 "fc1c608c3799c241543711cd853321bff9057df982f2e79bed8c1c89cd7fce3e"
+      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.4.0/flint-0.4.0-x86_64-linux.tar.gz"
+      sha256 "5409920cf696ee2ab811d6f08fde6a875fdc10ef8686682879b52c5979079cc4"
     end
   end
 
@@ -47,6 +47,6 @@ class Flint < Formula
   end
 
   test do
-    assert_match "0.3.0", shell_output("#{bin}/flint --version")
+    assert_match "0.4.0", shell_output("#{bin}/flint --version")
   end
 end
