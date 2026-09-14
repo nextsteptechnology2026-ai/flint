@@ -304,6 +304,10 @@ pub struct Editor {
     pub indent_with_spaces: bool,
     /// Si al guardar se recortan los espacios del final de cada línea.
     pub trim_on_save: bool,
+    /// Si antes de guardar se le pide al servidor de lenguaje que formatee.
+    /// Lo resuelve `App`, que es quien habla con el servidor: `save` no lo
+    /// mira.
+    pub format_on_save: bool,
     /// Si escribir `(`, `[`, `{`, `"` o `'` agrega también el de cierre.
     pub auto_close: bool,
     /// Si una línea terminada en `:` abre un bloque, como en Python. En un
@@ -368,6 +372,42 @@ fn mtime_de(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Junta las ediciones de un multi-cursor que se pisan. Si dos rangos a
+/// borrar se superponen (una selección y un cursor adentro de ella, o dos
+/// selecciones que se cruzaron al extenderlas) o empiezan en el mismo lugar
+/// (dos cursores apilados), aplicarlos por separado sobre el mismo texto
+/// borraría de más: el segundo usa índices que el primero ya corrió. Se
+/// reemplazan por una sola edición sobre la unión, con el texto de una sola
+/// de ellas, y queda el índice menor para que la primaria no se pierda.
+/// Rangos que solo se tocan en un borde (`0..1` y `1..2`) no se pisan y se
+/// dejan como están.
+fn fundir_ediciones(mut planned: Vec<(usize, usize, usize, String)>) -> Vec<(usize, usize, usize, String)> {
+    planned.sort_by_key(|&(_, inicio, fin, _)| (inicio, fin));
+    let mut fundidas: Vec<(usize, usize, usize, String)> = Vec::with_capacity(planned.len());
+    for edicion in planned {
+        if let Some(anterior) = fundidas.last_mut()
+            && (edicion.1 < anterior.2 || edicion.1 == anterior.1)
+        {
+            anterior.0 = anterior.0.min(edicion.0);
+            anterior.2 = anterior.2.max(edicion.2);
+            continue;
+        }
+        fundidas.push(edicion);
+    }
+    fundidas
+}
+
+/// Las expresiones regulares de buscar y reemplazar se compilan en modo
+/// multilínea: en un editor, `^` y `$` son el principio y el fin de cada
+/// línea, no los del archivo entero. Sin esto `^fn` solo encontraba algo si
+/// el archivo empezaba con `fn`.
+fn regex_de_editor(pattern: &str) -> Result<Regex, String> {
+    regex::RegexBuilder::new(pattern)
+        .multi_line(true)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 impl Editor {
     pub fn open(path: Option<PathBuf>) -> io::Result<Editor> {
         let disk_mtime = path.as_ref().and_then(|p| mtime_de(p));
@@ -410,6 +450,7 @@ impl Editor {
             tab_width: DEFAULT_TAB_WIDTH,
             indent_with_spaces: false,
             trim_on_save: false,
+            format_on_save: false,
             auto_close: true,
             indent_after_colon: false,
             disk_mtime,
@@ -1007,6 +1048,7 @@ impl Editor {
             let (del_start, del_end, text) = plan(&self.rope, s, e);
             planned.push((i, del_start, del_end, text));
         }
+        let planned = fundir_ediciones(planned);
 
         // Para el LSP: una sola edición (el caso normal — tipear, borrar,
         // etc. con un cursor) se puede mandar como delta incremental, con
@@ -1062,11 +1104,18 @@ impl Editor {
             }
         }
 
-        let mut sels = sels;
-        for (i, char_idx) in final_char_idx {
-            sels[i] = Selection::point(self.position_from_char_idx(char_idx));
-        }
-        self.apply_selections(sels);
+        // Quedan solo los cursores de las ediciones que sobrevivieron a la
+        // fusión, en su orden original (la primaria, si estaba, sigue
+        // primera), y sin repetidos: dos cursores que terminan en el mismo
+        // lugar escribirían dos veces cada letra que siga.
+        final_char_idx.sort_by_key(|(i, _)| *i);
+        let mut vistos = std::collections::HashSet::new();
+        let nuevas: Vec<Selection> = final_char_idx
+            .into_iter()
+            .filter(|(_, idx)| vistos.insert(*idx))
+            .map(|(_, idx)| Selection::point(self.position_from_char_idx(idx)))
+            .collect();
+        self.apply_selections(nuevas);
         self.mark_changed();
     }
 
@@ -2246,7 +2295,7 @@ impl Editor {
     /// búsqueda con regex (una acción explícita, no algo que corra en cada
     /// tecla), así que el costo es aceptable.
     pub fn find_next_regex(&mut self, pattern: &str) -> Result<bool, String> {
-        let re = Regex::new(pattern).map_err(|e| e.to_string())?;
+        let re = regex_de_editor(pattern)?;
         let text = self.rope.to_string();
         if text.is_empty() {
             return Ok(false);
@@ -2277,7 +2326,7 @@ impl Editor {
     /// crate `regex`). `Err` con el mensaje del motor si `pattern` no
     /// compila.
     pub fn replace_all_regex(&mut self, pattern: &str, with: &str) -> Result<usize, String> {
-        let re = Regex::new(pattern).map_err(|e| e.to_string())?;
+        let re = regex_de_editor(pattern)?;
         let text = self.rope.to_string();
         let count = re.find_iter(&text).count();
         if count == 0 {
@@ -2797,5 +2846,381 @@ mod tests_palabra_bajo_cursor {
     #[test]
     fn los_acentos_y_el_guion_bajo_son_parte_de_la_palabra() {
         assert_eq!(en("let año_1 = 2;\n", 0, 5), "año_1");
+    }
+}
+
+/// El ciclo de edición completo: deshacer/rehacer, multi-cursor y buscar y
+/// reemplazar. Hasta acá se probaba a mano, y es lo que más fácil se rompe
+/// sin que nada avise: un cursor que queda una letra corrida o un deshacer
+/// que se lleva de más no tiran ningún error.
+#[cfg(test)]
+mod tests_ciclo_de_edicion {
+    use super::*;
+
+    fn ed(texto: &str) -> Editor {
+        let mut e = Editor::open(None).expect("un buffer sin archivo no toca el disco");
+        e.rope = Rope::from_str(texto);
+        e
+    }
+
+    fn pos(line: usize, col: usize) -> Position {
+        Position { line, col }
+    }
+
+    fn cursores(e: &mut Editor, lugares: &[(usize, usize)]) {
+        let sels = lugares.iter().map(|&(l, c)| Selection::point(pos(l, c))).collect();
+        e.apply_selections(sels);
+    }
+
+    fn escribir(e: &mut Editor, texto: &str) {
+        for c in texto.chars() {
+            e.insert_char(c);
+        }
+    }
+
+    /// Hace de cuenta que pasó el margen que agrupa las ediciones seguidas,
+    /// sin esperarlo de verdad.
+    fn pasa_el_tiempo(e: &mut Editor) {
+        e.last_edit_at = e.last_edit_at.map(|t| t - GROUP_TIMEOUT - Duration::from_millis(1));
+    }
+
+    fn texto(e: &Editor) -> String {
+        e.rope.to_string()
+    }
+
+    fn puntos(e: &Editor) -> Vec<Position> {
+        e.selections_snapshot().iter().map(|s| s.cursor).collect()
+    }
+
+    // ---------- deshacer y rehacer ----------
+
+    #[test]
+    fn escribir_seguido_se_deshace_de_una_vez() {
+        let mut e = ed("");
+        escribir(&mut e, "hola");
+        assert!(e.undo());
+        assert_eq!(texto(&e), "");
+        assert_eq!(e.cursor, pos(0, 0));
+        assert!(!e.undo(), "no quedaba nada más");
+    }
+
+    #[test]
+    fn pasado_el_margen_de_tiempo_es_otro_paso() {
+        let mut e = ed("");
+        escribir(&mut e, "ab");
+        pasa_el_tiempo(&mut e);
+        escribir(&mut e, "cd");
+        e.undo();
+        assert_eq!(texto(&e), "ab");
+        e.undo();
+        assert_eq!(texto(&e), "");
+    }
+
+    #[test]
+    fn escribir_y_borrar_son_pasos_distintos() {
+        let mut e = ed("");
+        escribir(&mut e, "abc");
+        e.backspace();
+        e.backspace();
+        assert_eq!(texto(&e), "a");
+        e.undo();
+        assert_eq!(texto(&e), "abc", "deshace los dos borrados juntos");
+        e.undo();
+        assert_eq!(texto(&e), "");
+    }
+
+    #[test]
+    fn rehacer_deja_texto_y_cursor_como_antes_de_deshacer() {
+        let mut e = ed("uno\n");
+        cursores(&mut e, &[(0, 3)]);
+        escribir(&mut e, " dos");
+        let (antes, cursor) = (texto(&e), e.cursor);
+        e.undo();
+        assert_eq!(e.cursor, pos(0, 3));
+        assert!(e.redo());
+        assert_eq!(texto(&e), antes);
+        assert_eq!(e.cursor, cursor);
+        assert!(!e.redo());
+    }
+
+    #[test]
+    fn una_edicion_nueva_despues_de_deshacer_borra_lo_que_habia_para_rehacer() {
+        let mut e = ed("");
+        escribir(&mut e, "ab");
+        e.undo();
+        escribir(&mut e, "x");
+        assert!(!e.redo());
+        assert_eq!(texto(&e), "x");
+    }
+
+    #[test]
+    fn deshacer_sin_nada_no_ensucia_el_buffer() {
+        let mut e = ed("intacto");
+        let version = e.content_version;
+        assert!(!e.undo());
+        assert!(!e.redo());
+        assert!(!e.dirty);
+        assert_eq!(e.content_version, version);
+    }
+
+    #[test]
+    fn deshacer_devuelve_todos_los_cursores_a_donde_estaban() {
+        let mut e = ed("a\nb\nc\n");
+        cursores(&mut e, &[(0, 1), (1, 1), (2, 1)]);
+        escribir(&mut e, "!");
+        assert_eq!(texto(&e), "a!\nb!\nc!\n");
+        e.undo();
+        assert_eq!(texto(&e), "a\nb\nc\n");
+        assert_eq!(puntos(&e), vec![pos(0, 1), pos(1, 1), pos(2, 1)]);
+    }
+
+    #[test]
+    fn la_pila_de_deshacer_tiene_tope_y_se_pierden_los_mas_viejos() {
+        let mut e = ed("");
+        for _ in 0..MAX_UNDO + 5 {
+            e.insert_char('x');
+            pasa_el_tiempo(&mut e);
+        }
+        let mut deshechos = 0;
+        while e.undo() {
+            deshechos += 1;
+        }
+        assert_eq!(deshechos, MAX_UNDO);
+        assert_eq!(texto(&e), "xxxxx", "quedan los cinco que no entraron");
+    }
+
+    #[test]
+    fn deshacer_pide_mandarle_el_documento_entero_al_servidor() {
+        let mut e = ed("");
+        escribir(&mut e, "ab");
+        let _ = e.take_lsp_sync_plan();
+        e.undo();
+        assert!(matches!(e.take_lsp_sync_plan(), LspSyncPlan::Full));
+    }
+
+    // ---------- multi-cursor ----------
+
+    #[test]
+    fn escribir_con_varios_cursores_en_la_misma_linea() {
+        let mut e = ed("ab ab ab");
+        cursores(&mut e, &[(0, 2), (0, 5), (0, 8)]);
+        escribir(&mut e, "XY");
+        assert_eq!(texto(&e), "abXY abXY abXY");
+        assert_eq!(puntos(&e), vec![pos(0, 4), pos(0, 9), pos(0, 14)]);
+    }
+
+    #[test]
+    fn el_orden_en_que_se_agregaron_los_cursores_no_cambia_el_resultado() {
+        let mut e = ed("ab ab ab");
+        // La primaria es la de la derecha: las ediciones igual se aplican
+        // de atrás para adelante y cada cursor termina detrás de lo suyo.
+        cursores(&mut e, &[(0, 8), (0, 2), (0, 5)]);
+        escribir(&mut e, "X");
+        assert_eq!(texto(&e), "abX abX abX");
+        assert_eq!(puntos(&e), vec![pos(0, 11), pos(0, 3), pos(0, 7)]);
+    }
+
+    #[test]
+    fn borrar_con_varios_cursores_puede_unir_lineas() {
+        let mut e = ed("ab\ncd\nef");
+        cursores(&mut e, &[(1, 0), (2, 0)]);
+        e.backspace();
+        assert_eq!(texto(&e), "abcdef");
+        assert_eq!(puntos(&e), vec![pos(0, 2), pos(0, 4)]);
+    }
+
+    #[test]
+    fn suprimir_con_varios_cursores() {
+        let mut e = ed("xa xb xc");
+        cursores(&mut e, &[(0, 0), (0, 3), (0, 6)]);
+        e.delete_forward();
+        assert_eq!(texto(&e), "a b c");
+        assert_eq!(puntos(&e), vec![pos(0, 0), pos(0, 2), pos(0, 4)]);
+    }
+
+    #[test]
+    fn un_cursor_al_principio_del_archivo_no_borra_nada_ni_desalinea_a_los_otros() {
+        let mut e = ed("abc\ndef");
+        cursores(&mut e, &[(0, 0), (1, 3)]);
+        e.backspace();
+        assert_eq!(texto(&e), "abc\nde");
+        assert_eq!(puntos(&e), vec![pos(0, 0), pos(1, 2)]);
+    }
+
+    #[test]
+    fn seleccionar_las_siguientes_apariciones_y_reemplazarlas_escribiendo() {
+        let mut e = ed("foo bar foo baz foo");
+        e.apply_selections(vec![Selection { anchor: pos(0, 0), cursor: pos(0, 3) }]);
+        assert!(e.select_next_occurrence());
+        assert!(e.select_next_occurrence());
+        assert!(!e.select_next_occurrence(), "ya estaban las tres");
+        e.insert_char('X');
+        assert_eq!(texto(&e), "X bar X baz X");
+        assert!(e.undo());
+        assert_eq!(texto(&e), "foo bar foo baz foo", "un solo paso para todas");
+    }
+
+    #[test]
+    fn la_siguiente_aparicion_da_la_vuelta_al_archivo() {
+        let mut e = ed("uno dos uno");
+        // Se parte de la segunda: la que falta está antes.
+        e.apply_selections(vec![Selection { anchor: pos(0, 8), cursor: pos(0, 11) }]);
+        assert!(e.select_next_occurrence());
+        let rangos: Vec<(usize, usize)> =
+            e.selections_snapshot().iter().map(|s| e.selection_char_range(*s)).collect();
+        assert_eq!(rangos, vec![(8, 11), (0, 3)]);
+    }
+
+    #[test]
+    fn mover_con_shift_extiende_la_seleccion_de_cada_cursor() {
+        let mut e = ed("abcd\nefgh");
+        cursores(&mut e, &[(0, 0), (1, 0)]);
+        e.move_right(true);
+        e.move_right(true);
+        assert_eq!(e.selected_text().as_deref(), Some("ab\nef"));
+        e.backspace();
+        assert_eq!(texto(&e), "cd\ngh");
+    }
+
+    #[test]
+    fn cursores_que_terminan_en_el_mismo_lugar_se_funden() {
+        // Dos cursores pegados que borran hacia atrás quedan los dos en la
+        // columna 0. Si siguieran siendo dos, la próxima letra se escribiría
+        // dos veces.
+        let mut e = ed("abc");
+        cursores(&mut e, &[(0, 1), (0, 2)]);
+        e.backspace();
+        assert_eq!(texto(&e), "c");
+        escribir(&mut e, "X");
+        assert_eq!(texto(&e), "Xc");
+        assert_eq!(puntos(&e), vec![pos(0, 1)]);
+    }
+
+    #[test]
+    fn selecciones_que_se_pisan_borran_la_union_y_no_de_mas() {
+        // Una selección de 0 a 3 y otro cursor adentro de ella, en la 2.
+        let mut e = ed("abcdef");
+        e.apply_selections(vec![
+            Selection { anchor: pos(0, 0), cursor: pos(0, 3) },
+            Selection::point(pos(0, 2)),
+        ]);
+        e.backspace();
+        assert_eq!(texto(&e), "def");
+        assert_eq!(puntos(&e), vec![pos(0, 0)]);
+    }
+
+    #[test]
+    fn con_un_cursor_al_servidor_le_llegan_deltas_y_con_varios_el_documento() {
+        let mut e = ed("ab\ncd");
+        let _ = e.take_lsp_sync_plan();
+        cursores(&mut e, &[(0, 2)]);
+        escribir(&mut e, "!");
+        match e.take_lsp_sync_plan() {
+            LspSyncPlan::Incremental(cambios) => {
+                assert_eq!(cambios.len(), 1);
+                assert_eq!((cambios[0].start_line, cambios[0].start_col_utf16), (0, 2));
+                assert_eq!(cambios[0].text, "!");
+            }
+            _ => panic!("un cursor escribiendo tiene que ir como delta"),
+        }
+        cursores(&mut e, &[(0, 0), (1, 0)]);
+        escribir(&mut e, "#");
+        assert!(matches!(e.take_lsp_sync_plan(), LspSyncPlan::Full));
+    }
+
+    // ---------- buscar y reemplazar ----------
+
+    #[test]
+    fn buscar_avanza_y_da_la_vuelta() {
+        let mut e = ed("gato\nperro gato\ngato");
+        assert!(e.find_next("gato"), "el cursor está sobre la primera: salta a la siguiente");
+        assert_eq!(e.cursor, pos(1, 6));
+        assert!(e.find_next("gato"));
+        assert_eq!(e.cursor, pos(2, 0));
+        assert!(e.find_next("gato"));
+        assert_eq!(e.cursor, pos(0, 0), "da la vuelta");
+    }
+
+    #[test]
+    fn buscar_algo_que_no_esta_no_mueve_el_cursor() {
+        let mut e = ed("abc\ndef");
+        cursores(&mut e, &[(1, 2)]);
+        assert!(!e.find_next("xyz"));
+        assert!(!e.find_next(""));
+        assert_eq!(e.cursor, pos(1, 2));
+    }
+
+    #[test]
+    fn buscar_cuenta_columnas_en_caracteres() {
+        let mut e = ed("ñandú café\ncafé");
+        assert!(e.find_next("café"));
+        assert_eq!(e.cursor, pos(0, 6));
+        assert!(e.find_next("é"));
+        assert_eq!(e.cursor, pos(0, 9));
+    }
+
+    #[test]
+    fn reemplazar_todo_cuenta_y_se_deshace_de_una() {
+        let mut e = ed("a-b-c-d");
+        assert_eq!(e.replace_all("-", " + "), 3);
+        assert_eq!(texto(&e), "a + b + c + d");
+        assert!(e.dirty);
+        assert!(e.undo());
+        assert_eq!(texto(&e), "a-b-c-d");
+    }
+
+    #[test]
+    fn reemplazar_por_algo_que_contiene_lo_buscado_no_se_repite() {
+        let mut e = ed("a a");
+        assert_eq!(e.replace_all("a", "aa"), 2);
+        assert_eq!(texto(&e), "aa aa");
+    }
+
+    #[test]
+    fn reemplazar_sin_coincidencias_no_ensucia_ni_gasta_un_paso() {
+        let mut e = ed("nada que ver");
+        assert_eq!(e.replace_all("xyz", "w"), 0);
+        assert_eq!(e.replace_all("", "w"), 0);
+        assert!(!e.dirty);
+        assert!(!e.undo());
+    }
+
+    #[test]
+    fn reemplazar_todo_deja_los_cursores_dentro_del_texto_nuevo() {
+        let mut e = ed("una linea bastante larga\notra");
+        cursores(&mut e, &[(0, 20), (1, 4)]);
+        e.replace_all("bastante larga", "corta");
+        assert_eq!(texto(&e), "una linea corta\notra");
+        for p in puntos(&e) {
+            assert!(p.col <= e.line_char_len(p.line), "cursor fuera de la línea: {p:?}");
+        }
+        assert!(matches!(e.take_lsp_sync_plan(), LspSyncPlan::Full));
+    }
+
+    #[test]
+    fn reemplazar_con_regex_usa_los_grupos() {
+        let mut e = ed("foo123 bar45");
+        assert_eq!(e.replace_all_regex(r"([a-z]+)(\d+)", "$2$1"), Ok(2));
+        assert_eq!(texto(&e), "123foo 45bar");
+        e.undo();
+        assert_eq!(texto(&e), "foo123 bar45");
+    }
+
+    #[test]
+    fn una_regex_invalida_avisa_y_no_toca_nada() {
+        let mut e = ed("(abc)");
+        assert!(e.replace_all_regex("(abc", "x").is_err());
+        assert!(e.find_next_regex("[").is_err());
+        assert_eq!(texto(&e), "(abc)");
+        assert!(!e.dirty);
+    }
+
+    #[test]
+    fn la_regex_entiende_principio_de_linea_aunque_se_busque_desde_el_medio() {
+        let mut e = ed("x fn\nfn y\n  fn");
+        assert_eq!(e.find_next_regex("^fn"), Ok(true));
+        assert_eq!(e.cursor, pos(1, 0));
+        assert_eq!(e.find_next_regex("^fn"), Ok(true));
+        assert_eq!(e.cursor, pos(1, 0), "es la única al principio de una línea");
     }
 }

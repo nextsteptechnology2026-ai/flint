@@ -12,18 +12,19 @@ Medianos:
    Lo que sigue faltando de la API: definir un lenguaje nuevo con su
    resaltado, y correr algo en respuesta a un evento (guardar, abrir) en vez
    de solo cuando el usuario invoca un comando.
-2. Tests: el hueco cambió de lugar. Hoy hay 136 y cubren columnas,
+2. Tests: el hueco cambió de lugar. Hoy hay 167 y cubren columnas,
    indentación (incluida la automática al apretar Enter), comentarios, pares
    de delimitadores, recorte al guardar, configuración, respaldos, el parseo
    de las respuestas de autocompletado, el dibujado en una terminal angosta,
    el resaltado incremental (contra el motor viejo y contra recalcular todo),
    las diecisiete gramáticas, la API de plugins y el traductor entre lo
    que manda un servidor LSP y lo que hace Flint (ir a la definición y
-   renombrar), la búsqueda en el proyecto, el hover y la lista de saltos.
-   Sigue sin cubrirse el ciclo de edición completo: deshacer/rehacer,
-   multi-cursor, búsqueda y reemplazo, y el cliente LSP de punta a punta
-   (eso último se probó a mano contra rust-analyzer y contra pylsp, pero no
-   hay nada automático que lo cuide).
+   renombrar), la búsqueda en el proyecto, el hover, la lista de saltos y
+   el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y
+   reemplazar).
+   Sigue sin cubrirse el cliente LSP de punta a punta: se probó a mano
+   contra rust-analyzer y contra pylsp, pero no hay nada automático que lo
+   cuide. Haría falta un servidor LSP de mentira que conteste por stdio.
 3. La *primera* pasada del resaltado, al abrir un archivo, sigue siendo
    proporcional al tamaño: unos 1,1 s en un archivo de 3 MB, y hasta que
    termina el archivo se ve sin color. Lo que arregla eso es resaltar
@@ -80,6 +81,48 @@ grandes mejor que las líneas en memoria de micro, el cliente LSP es nativo y
 no un plugin de terceros, los delimitadores se cuentan salteando cadenas y
 comentarios porque hay un árbol de verdad detrás, y la capa modal opcional
 con selección estructural no tiene equivalente ahí.
+
+Formatear y formatear al guardar — cerrado el 2026-09-13:
+- textDocument/formatting (Alt+Shift+F, = en NORMAL, "format"), pedido solo
+  si el servidor anuncia documentFormattingProvider. format_on_save en
+  [options] y por archivo, apagado por defecto.
+- Al guardar se espera la respuesta en el momento, hasta 2 s
+  (ESPERA_FORMATO); pasado eso se guarda sin formatear y se avisa. Mientras
+  espera, los otros mensajes del servidor pasan por handle_lsp_message en
+  vez de tirarse (esperar_respuesta). Una respuesta que llega tarde
+  encuentra su Pending::Format y se ignora.
+- `null` y `[]` se distinguen: `[]` es "ya estaba formateado"; `null` es lo
+  que manda rust-analyzer cuando no pudo correr rustfmt, y decir "ya estaba
+  formateado" ahí sería mentir. Así se descubrió que en esta máquina falta
+  rustfmt (rustup component add rustfmt).
+- Probado a mano en tmux con un servidor LSP de mentira en Python (formatea
+  de verdad, y tiene modos lento, error y nulo): formatea y guarda en ~15 ms
+  sin perder el diagnóstico que llega mientras espera, Ctrl+Z deshace el
+  formato entero, el modo lento guarda sin formatear a los 2 s justos, error
+  y nulo guardan y explican, y Alt+Shift+F formatea sin guardar. Contra
+  rust-analyzer real solo se vio el caso nulo, por la falta de rustfmt.
+- Ese servidor de mentira es la base natural para los tests del LSP de
+  punta a punta (punto 2).
+
+Tests del ciclo de edición — cerrado el 2026-09-13:
+- 30 tests nuevos en editor.rs (tests_ciclo_de_edicion): agrupación de
+  deshacer por ráfagas y por tipo de edición, rehacer, que una edición nueva
+  borre el rehacer, tope de la pila, cursores restaurados al deshacer,
+  multi-cursor escribiendo, borrando y uniendo líneas, siguiente aparición
+  con vuelta al archivo, Shift con varios cursores, buscar y reemplazar
+  literal y con regex, y qué le llega al servidor LSP en cada caso.
+- Encontraron tres errores reales, corregidos:
+  1. Dos cursores que terminaban en el mismo lugar seguían siendo dos: la
+     letra siguiente se escribía dos veces. Ahora se funden.
+  2. Selecciones que se pisaban (una selección y un cursor adentro de ella,
+     o dos que se cruzaron al extenderlas) borraban de más: el segundo
+     borrado usaba índices que el primero ya había corrido. Ahora se
+     aplica una sola edición sobre la unión (fundir_ediciones).
+  3. En buscar y reemplazar con regex, `^` y `$` eran el principio y el fin
+     del archivo, no de cada línea, aunque el comentario del código decía
+     lo contrario. Se compilan en modo multilínea.
+- El 1 se comprobó además a mano en tmux: "aab", Ctrl+D sobre las dos "a",
+  Backspace y "X" deja "Xb" (antes "XXb").
 
 Hover y lista de saltos — cerrado el 2026-09-13:
 - Hover (F1, K en NORMAL, "hover"): textDocument/hover, pedido solo si el

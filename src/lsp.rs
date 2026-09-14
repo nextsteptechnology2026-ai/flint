@@ -42,6 +42,10 @@ pub enum Pending {
         desde: (usize, usize),
         palabra: String,
     },
+    /// "Formatear". La respuesta se espera en el momento (ver
+    /// `formatear_ahora` en main): si llega tarde, después de haberse
+    /// guardado sin formatear, se descarta.
+    Format,
 }
 
 /// Un cambio de rango para `did_change_incremental` — posiciones en
@@ -196,7 +200,8 @@ impl LspClient {
                     // Markdown primero: es lo que mandan rust-analyzer y
                     // pylsp, y Flint ya sabe dibujarlo con el código
                     // resaltado.
-                    "hover": { "contentFormat": ["markdown", "plaintext"] }
+                    "hover": { "contentFormat": ["markdown", "plaintext"] },
+                    "formatting": { "dynamicRegistration": false }
                 }
             }
         });
@@ -328,6 +333,21 @@ impl LspClient {
                 "position": { "line": line, "character": character }
             }),
             Pending::Hover { buffer, desde, palabra },
+        )
+    }
+
+    /// `tab_size` e `insert_spaces` salen de las opciones del buffer: el
+    /// servidor las usa como preferencia cuando el proyecto no tiene su
+    /// propia configuración (un `rustfmt.toml`, un `pyproject.toml`), que
+    /// siempre manda.
+    pub fn request_formatting(&mut self, uri: &str, tab_size: usize, insert_spaces: bool) -> io::Result<u64> {
+        self.request(
+            "textDocument/formatting",
+            json!({
+                "textDocument": { "uri": uri },
+                "options": { "tabSize": tab_size, "insertSpaces": insert_spaces }
+            }),
+            Pending::Format,
         )
     }
 

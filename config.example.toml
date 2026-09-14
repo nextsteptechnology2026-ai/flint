@@ -34,6 +34,12 @@ trim_trailing_whitespace = false
 # apóstrofo), y Backspace entre un par vacío se lleva los dos.
 auto_close_brackets = true
 
+# Pedirle al servidor de lenguaje que formatee el archivo antes de guardarlo
+# (rustfmt a través de rust-analyzer, black o autopep8 a través de pylsp...).
+# Apagado por defecto: conviene prenderlo por tipo de archivo, abajo. Si el
+# servidor no contesta en 2 segundos se guarda igual, sin formatear.
+format_on_save = false
+
 # A dónde va lo que se copia:
 #   auto      el portapapeles del sistema, y si no hay (sesión SSH sin
 #             servidor gráfico) la terminal por OSC 52 — la de la máquina
@@ -49,6 +55,9 @@ clipboard = "auto"
 [files."*.py"]
 indent_with_spaces = true
 tab_width = 4
+
+[files."*.rs"]
+format_on_save = true
 
 [files."*.md"]
 wrap = true

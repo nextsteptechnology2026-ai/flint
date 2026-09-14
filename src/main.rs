@@ -136,6 +136,7 @@ struct App {
     lsp_definition: bool,
     lsp_rename: bool,
     lsp_hover: bool,
+    lsp_format: bool,
     /// Salta el margen de espera de la sincronización. Se prende solo para
     /// las peticiones que dependen de que el servidor tenga el texto de
     /// ahora mismo (ir a la definición, renombrar).
@@ -248,6 +249,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Ir a la definición (^] o F12)", Action::GotoDefinition),
         ("Renombrar el símbolo… (F6)", Action::RenamePrompt),
         ("Qué es esto: tipo y documentación (F1)", Action::Hover),
+        ("Formatear el archivo (Alt+Shift+F)", Action::Format),
         ("Volver al lugar anterior (Alt+←)", Action::JumpBack),
         ("Avanzar al lugar siguiente (Alt+→)", Action::JumpForward),
         ("Grabar/terminar macro (^U)", Action::MacroRecord),
@@ -302,6 +304,7 @@ const HELP_TEXT: &str = concat!(
     "    Ctrl+E  Vista previa de Markdown (solo en .md/.markdown)\n",
     "    Ctrl+] o F12   Ir a la definición (LSP)      F6  Renombrar el símbolo (LSP)\n",
     "    F1      Tipo y documentación de lo que está bajo el cursor (LSP)\n",
+    "    Alt+Shift+F   Formatear el archivo (LSP; format_on_save lo hace al guardar)\n",
     "    Alt+← / Alt+→   Volver al lugar anterior / avanzar (después de un salto)\n",
     "    Tab / Shift+Tab   Indentar / des-indentar el bloque seleccionado\n",
     "    Shift+flechas     Seleccionar (también Shift+Inicio/Fin/RePág/AvPág)\n",
@@ -320,7 +323,7 @@ const HELP_TEXT: &str = concat!(
     "    w/x   Seleccionar palabra/línea   n     Expandir selección (sintaxis)\n",
     "    m     Saltar al delimitador que hace pareja\n",
     "    D     Ir a la definición          r     Renombrar el símbolo\n",
-    "    K     Tipo y documentación (LSP)\n",
+    "    K     Tipo y documentación (LSP)   =     Formatear el archivo (LSP)\n",
     "    d/c   Borrar/Cambiar              y/p   Copiar/Pegar\n",
     "    i/a/I/A   Insertar (selección/línea)     o/O   Abrir línea abajo/arriba\n",
     "    u/U   Deshacer/Rehacer            Esc   Deseleccionar / volver\n",
@@ -407,6 +410,7 @@ fn apply_options(ed: &mut Editor, o: &config::Options) {
     ed.wrap = o.wrap;
     ed.trim_on_save = o.trim_trailing_whitespace;
     ed.auto_close = o.auto_close_brackets;
+    ed.format_on_save = o.format_on_save;
 }
 
 /// El comando del servidor de lenguaje: primero lo que diga `[lsp]` en la
@@ -552,8 +556,8 @@ fn main() -> io::Result<()> {
     let lang = buffer.lang;
     let (lsp_client, doc_uri, lsp_lang_id, caps) =
         setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme, &cfg);
-    let (lsp_incremental, lsp_definition, lsp_rename, lsp_hover) =
-        (caps.incremental, caps.definition, caps.rename, caps.hover);
+    let (lsp_incremental, lsp_definition, lsp_rename, lsp_hover, lsp_format) =
+        (caps.incremental, caps.definition, caps.rename, caps.hover, caps.format);
     buffer.doc_uri = doc_uri;
     buffer.lsp_lang_id = lsp_lang_id;
 
@@ -568,6 +572,7 @@ fn main() -> io::Result<()> {
         lsp_definition,
         lsp_rename,
         lsp_hover,
+        lsp_format,
         lsp_forzar_sync: false,
         last_was_select_line: false,
         keymap,
@@ -681,6 +686,7 @@ struct Capacidades {
     definition: bool,
     rename: bool,
     hover: bool,
+    format: bool,
 }
 
 impl Capacidades {
@@ -698,6 +704,7 @@ impl Capacidades {
             definition: tiene("definitionProvider"),
             rename: tiene("renameProvider"),
             hover: tiene("hoverProvider"),
+            format: tiene("documentFormattingProvider"),
         }
     }
 }
@@ -734,6 +741,7 @@ fn finish_init(
         (caps.definition, "definición"),
         (caps.rename, "renombre"),
         (caps.hover, "hover"),
+        (caps.format, "formato"),
     ]
     .iter()
     .filter(|(si, _)| *si)
@@ -2041,7 +2049,12 @@ fn play_macro(app: &mut App, page_size: usize) {
 /// el significado de la acción no cambia.
 fn execute_action(app: &mut App, action: Action, page_size: usize) {
     match action {
-        Action::Save => try_save(&mut app.buffers[app.active].ed, false),
+        Action::Save => guardar(app, false),
+        Action::Format => {
+            if let Some(aviso) = formatear_ahora(app, false) {
+                app.buffers[app.active].ed.status = aviso;
+            }
+        }
         Action::Quit => {
             let multi = app.buffers.len() > 1;
             try_quit(&mut app.buffers[app.active].ed, multi);
@@ -3383,7 +3396,7 @@ fn handle_prompt_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(c) => {
             if let PromptKind::QuitConfirm = &kind {
                 match c {
-                    's' | 'S' => try_save(&mut app.buffers[app.active].ed, true),
+                    's' | 'S' => guardar(app, true),
                     'n' | 'N' => app.buffers[app.active].ed.should_quit = true,
                     _ => app.buffers[app.active].ed.mode = Mode::Prompt { kind, buffer, label },
                 }
@@ -3590,6 +3603,118 @@ fn save_forcing(ed: &mut Editor, then_quit: bool) {
             }
         }
         Err(e) => ed.status = format!("Error al guardar: {e}"),
+    }
+}
+
+/// Cuánto se espera al servidor para formatear. Guardar no puede quedar
+/// colgado de un servidor lento: pasado esto se guarda sin formatear.
+const ESPERA_FORMATO: Duration = Duration::from_secs(2);
+
+/// Guardar el buffer activo, formateándolo antes si `format_on_save` está
+/// prendido para ese archivo. Si el formato no se pudo, se guarda igual y el
+/// motivo queda en la barra de estado junto al "Guardado".
+fn guardar(app: &mut App, then_quit: bool) {
+    let aviso = if app.buffers[app.active].ed.format_on_save {
+        formatear_ahora(app, true)
+    } else {
+        None
+    };
+    let ed = &mut app.buffers[app.active].ed;
+    try_save(ed, then_quit);
+    if let Some(aviso) = aviso
+        && matches!(ed.mode, Mode::Editing)
+    {
+        ed.status = format!("{} — {aviso}", ed.status);
+    }
+}
+
+/// Le pide al servidor que formatee el buffer activo y aplica lo que
+/// conteste, como un solo paso de deshacer. Espera la respuesta en el
+/// momento, hasta `ESPERA_FORMATO`: al guardar, lo que se escribe tiene que
+/// ser el texto ya formateado, y un pedido que vuelve cuando el archivo ya
+/// se guardó llega tarde. Mientras espera, lo demás que mande el servidor
+/// (diagnósticos, sobre todo) se atiende normalmente.
+///
+/// Devuelve qué decir en la barra de estado, o `None` si no hay nada que
+/// contar. `al_guardar` calla los casos en que no hay con qué formatear (un
+/// archivo sin servidor): ahí la opción simplemente no aplica.
+fn formatear_ahora(app: &mut App, al_guardar: bool) -> Option<String> {
+    let sin_servidor = app.lsp.is_none() || app.buffers[app.active].doc_uri.is_none();
+    if sin_servidor || !app.lsp_format {
+        if al_guardar {
+            return None;
+        }
+        return Some(if sin_servidor {
+            "Formatear necesita un servidor de lenguaje, y este archivo no tiene".to_string()
+        } else {
+            "El servidor de lenguaje no sabe formatear".to_string()
+        });
+    }
+    let uri = app.buffers[app.active].doc_uri.clone()?;
+    sync_lsp_ahora(app);
+    let (tab, espacios) = {
+        let ed = &app.buffers[app.active].ed;
+        (ed.tab_width, ed.indent_with_spaces)
+    };
+    let enviado = app.lsp.as_mut().map(|c| c.request_formatting(&uri, tab, espacios));
+    let id = match enviado {
+        Some(Ok(id)) => id,
+        Some(Err(e)) => return Some(format!("no pude pedirle el formato al servidor: {e}")),
+        None => return None,
+    };
+    let Some(respuesta) = esperar_respuesta(app, id, ESPERA_FORMATO) else {
+        return Some(format!(
+            "el servidor no formateó en {} s; quedó sin formatear",
+            ESPERA_FORMATO.as_secs()
+        ));
+    };
+    if let Some(error) = respuesta.get("error") {
+        let mensaje = error.get("message").and_then(Value::as_str).unwrap_or("error desconocido");
+        return Some(format!("el servidor no pudo formatear: {mensaje}"));
+    }
+    // `null` y una lista vacía no son lo mismo: la lista vacía es "no hay
+    // nada que cambiar", y `null` es lo que contesta rust-analyzer cuando no
+    // pudo correr el formateador (rustfmt sin instalar, por ejemplo). Decir
+    // "ya estaba formateado" en ese caso sería mentir.
+    let Some(ediciones) = respuesta.get("result").and_then(Value::as_array).cloned() else {
+        return Some(
+            "el servidor no devolvió formato (¿falta el formateador? rust-analyzer usa rustfmt)"
+                .to_string(),
+        );
+    };
+    let ed = &mut app.buffers[app.active].ed;
+    let antes = ed.rope.clone();
+    if aplicar_ediciones(ed, &ediciones) && ed.rope != antes {
+        Some("formateado".to_string())
+    } else {
+        Some("ya estaba formateado".to_string())
+    }
+}
+
+/// Espera la respuesta a la petición `id`, hasta `timeout`, y la devuelve
+/// entera (con `result` o `error`). A diferencia de `wait_for_response`, que
+/// solo se usa al arrancar, los demás mensajes que lleguen mientras tanto no
+/// se tiran: pasan por `handle_lsp_message` como en el bucle principal.
+fn esperar_respuesta(app: &mut App, id: u64, timeout: Duration) -> Option<Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let ahora = Instant::now();
+        if ahora >= deadline {
+            return None;
+        }
+        let client = app.lsp.as_mut()?;
+        if !client.is_alive() {
+            return None;
+        }
+        let Some(msg) = client.recv_timeout((deadline - ahora).min(Duration::from_millis(50))) else {
+            continue;
+        };
+        let es_la_respuesta = msg.get("method").is_none() && msg.get("id").and_then(Value::as_u64) == Some(id);
+        if es_la_respuesta {
+            client.pending.remove(&id);
+            return Some(msg);
+        }
+        handle_lsp_message(app, msg);
     }
 }
 

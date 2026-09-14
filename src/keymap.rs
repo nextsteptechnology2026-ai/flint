@@ -79,6 +79,8 @@ pub enum Action {
     JumpBack,
     /// Rehacer un salto después de haber vuelto.
     JumpForward,
+    /// Formatear el archivo con el servidor de lenguaje.
+    Format,
     /// Saltar al delimitador que hace pareja con el de al lado del cursor.
     JumpMatchingBracket,
     /// Empezar a grabar una macro, o terminarla si ya se está grabando.
@@ -257,6 +259,9 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::plain(T::F(1)), Hover);
     d(KeyChord::with_alt(T::Left), JumpBack);
     d(KeyChord::with_alt(T::Right), JumpForward);
+    // Alt+Shift+F, como en VS Code. Shift sobre una letra ya va en la
+    // mayúscula, así que la tecla es Alt con "F".
+    d(KeyChord::with_alt(T::Char('F')), Format);
     d(KeyChord::with_ctrl(T::PageDown), NextBuffer);
     d(KeyChord::with_ctrl(T::PageUp), PrevBuffer);
     d(KeyChord::plain(T::Enter), InsertNewline);
@@ -308,6 +313,8 @@ fn base_normal() -> HashMap<KeyChord, Action> {
     m.insert(KeyChord::plain(Char('r')), RenamePrompt);
     // La misma letra que en Vim y en Helix.
     m.insert(KeyChord::plain(Char('K')), Hover);
+    // `=` es "formatear" en Vim y en Helix.
+    m.insert(KeyChord::plain(Char('=')), Format);
     m.insert(KeyChord::plain(Char('d')), NormalDelete);
     m.insert(KeyChord::plain(Char('c')), NormalChange);
     m.insert(KeyChord::plain(Char('y')), NormalYank);
@@ -483,6 +490,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("hover", Hover),
         ("jump_back", JumpBack),
         ("jump_forward", JumpForward),
+        ("format", Format),
         ("goto_line", GotoLinePrompt),
         ("goto_definition", GotoDefinition),
         ("rename", RenamePrompt),

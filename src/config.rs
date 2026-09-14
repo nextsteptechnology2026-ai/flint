@@ -38,6 +38,9 @@ pub struct Options {
     pub trim_trailing_whitespace: bool,
     /// Cerrar solo los paréntesis, corchetes, llaves y comillas.
     pub auto_close_brackets: bool,
+    /// Pedirle al servidor de lenguaje que formatee el archivo antes de
+    /// guardarlo.
+    pub format_on_save: bool,
 }
 
 impl Default for Options {
@@ -48,6 +51,7 @@ impl Default for Options {
             wrap: false,
             trim_trailing_whitespace: false,
             auto_close_brackets: true,
+            format_on_save: false,
         }
     }
 }
@@ -106,6 +110,7 @@ struct RawOptions {
     wrap: Option<bool>,
     trim_trailing_whitespace: Option<bool>,
     auto_close_brackets: Option<bool>,
+    format_on_save: Option<bool>,
 }
 
 /// El comando de un servidor se puede escribir como `"pylsp"` o como
@@ -239,6 +244,9 @@ fn apply(o: &mut Options, raw: &RawOptions) {
     if let Some(b) = raw.auto_close_brackets {
         o.auto_close_brackets = b;
     }
+    if let Some(b) = raw.format_on_save {
+        o.format_on_save = b;
+    }
 }
 
 fn check_tab_width(seccion: &str, raw: &RawOptions, warnings: &mut Vec<String>) {
@@ -349,6 +357,14 @@ mod tests {
         let (cfg, avisos) = Config::load(&ruta);
         assert!(avisos.is_empty(), "avisos inesperados: {avisos:?}");
         cfg.options_for(Some(Path::new(archivo)), &Options::default())
+    }
+
+    #[test]
+    fn formatear_al_guardar_viene_apagado_y_se_prende_por_archivo() {
+        let src = "[files.\"*.rs\"]\nformat_on_save = true\n";
+        assert!(opciones(src, "src/main.rs").format_on_save);
+        assert!(!opciones(src, "script.py").format_on_save);
+        assert!(!Options::default().format_on_save);
     }
 
     #[test]

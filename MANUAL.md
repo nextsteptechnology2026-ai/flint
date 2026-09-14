@@ -62,6 +62,7 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+T` | Buscador difuso de archivos del proyecto — escribí parte del nombre y `Enter` lo abre |
 | `Ctrl+N` | Buscar texto en todos los archivos del proyecto — `Enter` salta a la coincidencia |
 | `F1` | Tipo y documentación de lo que está bajo el cursor (LSP) |
+| `Alt+Shift+F` | Formatear el archivo (LSP) |
 | `Alt+←` / `Alt+→` | Volver a donde estabas antes de un salto / rehacer el salto |
 | `Ctrl+K` | Comentar / descomentar las líneas que toca la selección |
 | `Ctrl+U` | Empezar a grabar una macro, o terminarla si ya se está grabando |
@@ -80,7 +81,7 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Shift+Tab` | Saca un nivel de indentación de cada línea tocada: un tabulador, o hasta `tab_width` espacios si la línea usa espacios |
 | `Backspace` / `Delete` | Los de siempre. Entre un par vacío (`()` con el cursor en el medio), `Backspace` se lleva los dos |
 
-La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplazar (regex)…" — mismo flujo que `Ctrl+F`/`Ctrl+R`, pero el texto se interpreta como expresión regular (sintaxis del crate `regex` de Rust) en vez de texto literal; el reemplazo admite grupos capturados (`$1`, `${nombre}`). No tienen atajo de teclado propio, para no arriesgar un choque con la búsqueda literal.
+La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplazar (regex)…" — mismo flujo que `Ctrl+F`/`Ctrl+R`, pero el texto se interpreta como expresión regular (sintaxis del crate `regex` de Rust) en vez de texto literal; el reemplazo admite grupos capturados (`$1`, `${nombre}`). `^` y `$` son el principio y el fin de cada línea, no del archivo: `^fn` encuentra toda línea que empiece con `fn`. No tienen atajo de teclado propio, para no arriesgar un choque con la búsqueda literal.
 
 ## Atajos — capa modal, NORMAL
 
@@ -93,6 +94,7 @@ La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplaza
 | `n` | Expandir la selección al nodo de sintaxis que la contiene (repetida, sube un nivel del árbol) |
 | `m` | Saltar al paréntesis, corchete o llave que hace pareja con el de al lado del cursor |
 | `K` | Tipo y documentación de lo que está bajo el cursor (LSP), como en Vim y Helix |
+| `=` | Formatear el archivo (LSP) |
 | `d` | Cortar: borra el rango si hay selección (si no, el carácter siguiente) y lo manda al portapapeles del sistema — se puede pegar después con `p`, o en cualquier otra aplicación |
 | `c` | Cambiar: corta la selección (si hay, igual que `d`) y entra a INSERT |
 | `y` | Copiar la selección al portapapeles del sistema |
@@ -197,6 +199,7 @@ Las banderas de la línea de comandos ganan por encima del archivo, y el archivo
 | `wrap` | `false` | Arrancar con ajuste de línea activado |
 | `trim_trailing_whitespace` | `false` | Sacar los espacios del final de cada línea al guardar |
 | `auto_close_brackets` | `true` | Cerrar solo `(`, `[`, `{`, `"` y `'` |
+| `format_on_save` | `false` | Formatear con el servidor de lenguaje antes de guardar (ver [Formatear](#formatear-altshiftf-lsp)) |
 | `clipboard` | `"auto"` | A dónde va lo copiado (ver la sección Portapapeles) |
 
 ### `[files."patrón"]` — lo mismo, por archivo
@@ -549,6 +552,39 @@ formateado y con el código resaltado con el mismo tree-sitter del editor.
 
 Como definición y renombre, necesita un servidor que anuncie que sabe hacerlo
 (`hoverProvider`); rust-analyzer y pylsp lo hacen.
+
+## Formatear (`Alt+Shift+F`, LSP)
+
+`Alt+Shift+F` (o `=` en la capa modal, o "Formatear el archivo" en la paleta)
+le pide al servidor de lenguaje que formatee el archivo entero, con el
+formateador que ese servidor use: `rustfmt` en rust-analyzer; `black`,
+`autopep8` o `yapf` en pylsp, según qué plugin tenga instalado. Lo que cambia
+se deshace entero con un `Ctrl+Z`. No guarda.
+
+Para que pase solo al guardar, `format_on_save = true` en la configuración,
+mejor por tipo de archivo:
+
+```toml
+[files."*.rs"]
+format_on_save = true
+```
+
+Al guardar, Flint espera la respuesta en el momento —lo que se escribe en
+disco tiene que ser el texto ya formateado— pero **nunca más de 2 segundos**:
+si el servidor tarda más, se guarda igual sin formatear y la barra de estado
+lo dice. Un servidor colgado no te deja sin poder guardar. Mientras espera, lo
+demás que mande el servidor (diagnósticos) se atiende normalmente.
+
+La barra de estado distingue qué pasó: "formateado", "ya estaba formateado",
+el error que devolvió el servidor (una sintaxis rota, por ejemplo), o que no
+devolvió nada. Esto último suele querer decir que falta el formateador:
+rust-analyzer contesta así cuando `rustfmt` no está instalado
+(`rustup component add rustfmt` lo instala).
+
+El ancho de tabulación y si se indenta con espacios se le pasan al servidor
+como preferencia; la configuración del propio proyecto (`rustfmt.toml`,
+`pyproject.toml`) manda sobre eso. En un archivo sin servidor de lenguaje,
+`format_on_save` no hace nada y guardar funciona como siempre.
 
 ## Lista de saltos (`Alt+←`, `Alt+→`)
 
