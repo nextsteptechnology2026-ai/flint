@@ -36,17 +36,20 @@ SHA_LINUX_X86=$(sha x86_64-linux)
 cat <<RUBY
 # Fórmula de Homebrew para Flint.
 #
-# Para publicarla, una sola vez: crear el repositorio
-# ${REPO%%/*}/homebrew-flint (el prefijo "homebrew-" es obligatorio, brew lo
-# da por sentado) y dejar este archivo en Formula/flint.rb. De ahí en más,
-# cada release solo reemplaza ese archivo. Quien lo instala hace:
+# Vive en Formula/flint.rb del mismo repositorio de Flint, así que el tap es
+# el repositorio entero y no hace falta uno aparte "homebrew-flint". Como el
+# nombre no empieza con "homebrew-", brew necesita la URL explícita:
 #
-#     brew tap ${REPO%%/*}/flint
-#     brew install flint
+#     brew tap ${REPO%%/*}/flint https://github.com/$REPO
+#     brew install ${REPO%%/*}/flint/flint
 #
-# Se genera sola en cada release (packaging/homebrew-formula.sh): los sha256
-# salen de los tar.gz recién construidos, así que no hay forma de que queden
-# apuntando a la versión anterior.
+# El nombre completo en el install es obligatorio: homebrew-core ya tiene una
+# fórmula "flint" (la librería de teoría de números) y un "brew install flint"
+# a secas instala esa.
+#
+# Se genera sola en cada release (packaging/homebrew-formula.sh) y el workflow
+# la sube a main: los sha256 salen de los tar.gz recién construidos, así que
+# no hay forma de que queden apuntando a la versión anterior.
 class Flint < Formula
   desc "Editor de terminal con capa modal opcional, LSP y multi-cursor"
   homepage "https://github.com/$REPO"

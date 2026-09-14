@@ -119,7 +119,7 @@ jobs:
 
       # La fórmula de Homebrew se genera acá y no a mano: necesita el sha256
       # de cada tar.gz, que recién existe ahora. Sale como archivo de la
-      # release, lista para copiar al tap.
+      # release y además se sube a Formula/flint.rb en main (paso final).
       - name: Generar la fórmula de Homebrew
         run: bash packaging/homebrew-formula.sh "$VERSION" dist > dist/flint.rb
 
@@ -131,3 +131,22 @@ jobs:
             --title "Flint $GITHUB_REF_NAME" \
             --generate-notes \
             dist/*
+
+      # El tap de Homebrew es este mismo repositorio: `brew update` lee
+      # Formula/flint.rb de main. Va después de publicar a propósito, porque
+      # una fórmula que apunta a tar.gz que todavía no existen rompe el
+      # install de todos. El checkout está en la etiqueta, no en main, así
+      # que se baja main, se reemplaza el archivo y se sube.
+      - name: Actualizar la fórmula en main
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          cp dist/flint.rb Formula/flint.rb
+          if git diff --quiet -- Formula/flint.rb; then
+            echo "La fórmula en main ya está al día"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Fórmula de Homebrew para $GITHUB_REF_NAME" -- Formula/flint.rb
+          git push origin main

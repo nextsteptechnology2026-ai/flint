@@ -48,9 +48,11 @@ Baja el binario ya compilado de la última release, verifica su `sha256` contra 
 **Homebrew** (macOS y Linux):
 
 ```sh
-brew tap nextsteptechnology2026-ai/flint
-brew install flint
+brew tap nextsteptechnology2026-ai/flint https://github.com/nextsteptechnology2026-ai/flint
+brew install nextsteptechnology2026-ai/flint/flint
 ```
+
+El nombre completo en el `install` no es un capricho: Homebrew ya trae una fórmula oficial llamada `flint` (una librería de matemáticas), y `brew install flint` a secas instala esa. Una vez instalado, `brew upgrade` lo mantiene al día como a cualquier otro paquete.
 
 **Paquete `.deb`** (Debian, Ubuntu, Kali y derivados). En [releases](https://github.com/nextsteptechnology2026-ai/flint/releases) está el `.deb` listo, junto con los `.tar.gz` de cada plataforma y `sha256sums.txt`. También se puede armar en el momento; la máquina donde se instala **no** necesita tener Rust:
 
@@ -115,7 +117,14 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 
 ## Estado
 
-Prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código: LSP con diagnósticos solo para Rust (el comando de cualquier otro servidor ya se configura en `[lsp]`), API de plugins angosta, resaltado que recalcula todo el documento en vez de reusar el árbol, y paneles divididos, que son la única refactorización grande que queda.
+Versión 0.2.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
+
+- **La primera pasada del resaltado** al abrir un archivo es proporcional a su tamaño (≈1,1 s para 3 MB, sin color mientras tanto). Al editar ya no: el resaltado es incremental y reusa el árbol.
+- **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre y tener atajos propios; todavía no pueden definir un lenguaje nuevo ni reaccionar a eventos como guardar o abrir.
+- **LSP**: diagnósticos, autocompletado, ir a la definición y renombrar. Faltan hover, code actions y formateo.
+- **Tests**: 117, pero el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el LSP de punta a punta todavía se prueban a mano.
+
+Afuera a propósito: paneles divididos (las pestañas y tmux cubren el caso) y terminal integrada.
 
 ## Licencia
 
@@ -242,7 +251,7 @@ Hasta ahora la única forma de instalar Flint era `cargo install --path .` — q
 
 Se probó de punta a punta: `.deb` construido y su `control`/contenido inspeccionados con `dpkg-deb --info`/`--contents`; extraído sin privilegios de root (`dpkg-deb --extract`) para confirmar que el binario resultante corre igual que el compilado directo — abre un archivo, lo edita y sale, probado con tmux —, sin depender de nada del árbol de `cargo build` (ni rutas relativas al repo). La instalación real con `sudo apt install ./flint_*.deb` se hizo después, a mano: el paquete instala en `/usr/bin/flint` y corre sin el árbol de `cargo` presente.
 
-Lo que queda afuera de este alcance: Homebrew y binarios adjuntos a una release de GitHub. El repositorio público ya existe, así que dejaron de estar bloqueados — son el próximo paso natural de distribución, no un imposible.
+Lo que quedó afuera de este alcance —Homebrew y binarios adjuntos a una release de GitHub— se hizo en la 0.2.0: el workflow de release compila para Linux y macOS, adjunta los `.tar.gz`, el `.deb` y los `sha256`, y actualiza la fórmula de Homebrew en `Formula/flint.rb`.
 
 ## Qué hace (auto-indentación, búsqueda con regex, ajuste de línea)
 
