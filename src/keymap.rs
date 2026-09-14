@@ -71,6 +71,8 @@ pub enum Action {
     RenamePrompt,
     /// Abrir el buscador difuso de archivos del proyecto.
     FindFilePrompt,
+    /// Buscar texto en todos los archivos del proyecto.
+    SearchProjectPrompt,
     /// Saltar al delimitador que hace pareja con el de al lado del cursor.
     JumpMatchingBracket,
     /// Empezar a grabar una macro, o terminarla si ya se está grabando.
@@ -220,6 +222,9 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::Char('e')), TogglePreview);
     d(KeyChord::with_ctrl(T::Char('k')), ToggleComment);
     d(KeyChord::with_ctrl(T::Char('t')), FindFilePrompt);
+    // Ctrl+Shift+F sería lo esperable, pero una terminal en modo tradicional
+    // la manda igual que Ctrl+F. Ctrl+N estaba libre en los tres perfiles.
+    d(KeyChord::with_ctrl(T::Char('n')), SearchProjectPrompt);
     d(KeyChord::with_ctrl(T::Char('u')), MacroRecord);
     d(KeyChord::with_ctrl(T::Char('b')), MacroPlay);
     // Ctrl+] es el atajo clásico de "ir a la definición"; la terminal lo
@@ -447,6 +452,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("toggle_comment", ToggleComment),
         ("jump_matching_bracket", JumpMatchingBracket),
         ("find_file", FindFilePrompt),
+        ("search_project", SearchProjectPrompt),
         ("goto_line", GotoLinePrompt),
         ("goto_definition", GotoDefinition),
         ("rename", RenamePrompt),

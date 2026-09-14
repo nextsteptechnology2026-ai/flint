@@ -12,14 +12,14 @@ Medianos:
    Lo que sigue faltando de la API: definir un lenguaje nuevo con su
    resaltado, y correr algo en respuesta a un evento (guardar, abrir) en vez
    de solo cuando el usuario invoca un comando.
-2. Tests: el hueco cambió de lugar. Hoy hay 117 y cubren columnas,
+2. Tests: el hueco cambió de lugar. Hoy hay 126 y cubren columnas,
    indentación (incluida la automática al apretar Enter), comentarios, pares
    de delimitadores, recorte al guardar, configuración, respaldos, el parseo
    de las respuestas de autocompletado, el dibujado en una terminal angosta,
    el resaltado incremental (contra el motor viejo y contra recalcular todo),
    las diecisiete gramáticas, la API de plugins y el traductor entre lo
    que manda un servidor LSP y lo que hace Flint (ir a la definición y
-   renombrar).
+   renombrar), y la búsqueda en el proyecto.
    Sigue sin cubrirse el ciclo de edición completo: deshacer/rehacer,
    multi-cursor, búsqueda y reemplazo, y el cliente LSP de punta a punta
    (eso último se probó a mano contra rust-analyzer y contra pylsp, pero no
@@ -80,6 +80,25 @@ grandes mejor que las líneas en memoria de micro, el cliente LSP es nativo y
 no un plugin de terceros, los delimitadores se cuentan salteando cadenas y
 comentarios porque hay un árbol de verdad detrás, y la capa modal opcional
 con selección estructural no tiene equivalente ahí.
+
+Buscar texto en el proyecto — cerrado el 2026-09-13:
+- Ctrl+N (Ctrl+Shift+F llega igual que Ctrl+F en una terminal tradicional),
+  "search_project" en [keys] y en la paleta. Busca mientras se escribe:
+  el proyecto se lee a memoria al abrir el buscador (src/busqueda.rs) y
+  cada tecla busca sobre esa copia. Smartcase, literal, una coincidencia
+  por línea, y en los buffers abiertos se busca lo que tiene el editor,
+  cambios sin guardar incluidos.
+- Topes: 1 MB por archivo, 32 MB en total (se avisa si no entró entero) y
+  1.000 coincidencias. Medido sobre el registro de cargo (14.570 archivos,
+  llega al tope de 32 MB), con el binario de debug: 371 ms en abrir y
+  ~50 ms por tecla en el peor caso, una consulta que no aparece en ningún
+  lado.
+- De paso: el popup de la paleta y del buscador de archivos no seguía a la
+  selección más allá del décimo renglón. Ahora se desplaza.
+- Probado a mano en tmux: salto a otro archivo en una pestaña nueva a la
+  línea y columna exactas, y una palabra escrita sin guardar aparece.
+- Falta: regex (el motor ya está, por Ctrl+R con regex) y reemplazar en
+  todo el proyecto.
 
 Ir a la definición y renombrar — cerrado el 2026-09-10:
 - textDocument/definition y textDocument/rename, atados a Ctrl+] o F12 y a

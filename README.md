@@ -91,6 +91,7 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 | `Ctrl+P` | Paleta de comandos (todo lo que Flint sabe hacer, con búsqueda difusa) |
 | `Ctrl+D` | Sumar un cursor en la siguiente aparición de lo seleccionado |
 | `Ctrl+T` | Buscador difuso de archivos del proyecto |
+| `Ctrl+N` | Buscar texto en todo el proyecto |
 | `Ctrl+K` | Comentar / descomentar las líneas seleccionadas |
 | `Ctrl+U` / `Ctrl+B` | Grabar o terminar una macro / repetirla |
 | `Tab` / `Shift+Tab` | Indentar / des-indentar el bloque seleccionado |
@@ -110,19 +111,19 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 - **Autocompletado en cualquier archivo**: con servidor LSP, sus sugerencias; sin él, las palabras que ya escribiste en el archivo (como `Ctrl+N` en Vim), sin distinguir mayúsculas y ordenadas por cercanía al cursor.
 - **Configurable sin recompilar**: `~/.config/flint/config.toml` decide perfil de teclado, ancho de tabulación, tabuladores o espacios, ajuste de línea, recorte de espacios al guardar y cierre automático de pares — todo eso también **por patrón de archivo** (`[files."*.py"]`), así que Python indenta con espacios y Rust con tabuladores en el mismo editor. Las teclas se redefinen en `[keys]` por el nombre estable de cada acción (`flint --actions` los lista), y los servidores de lenguaje en `[lsp]`, sin tocar el código.
 - **Portapapeles que funciona por SSH**: si no hay servidor gráfico, copiar sale por **OSC 52** hacia la terminal que tenés adelante, en vez de perderse. Configurable (`auto`, `system`, `terminal`, `internal`).
-- **Herramientas de todos los días**: buscador difuso de archivos del proyecto (`Ctrl+T`, con la raíz detectada por `.git`/`Cargo.toml`/…), comentar y descomentar bloques con el token del lenguaje (`Ctrl+K`), macros que graban también lo tipeado (`Ctrl+U`/`Ctrl+B`), ir a línea, y cierre automático de pares con el par del cursor resaltado — los delimitadores que están dentro de una cadena o un comentario no cuentan, porque eso lo sabe el árbol de tree-sitter.
+- **Herramientas de todos los días**: buscador difuso de archivos del proyecto (`Ctrl+T`, con la raíz detectada por `.git`/`Cargo.toml`/…), búsqueda de texto en todo el proyecto mientras escribís (`Ctrl+N`, que incluye lo que está sin guardar), comentar y descomentar bloques con el token del lenguaje (`Ctrl+K`), macros que graban también lo tipeado (`Ctrl+U`/`Ctrl+B`), ir a línea, y cierre automático de pares con el par del cursor resaltado — los delimitadores que están dentro de una cadena o un comentario no cuentan, porque eso lo sabe el árbol de tree-sitter.
 - **No te pisa el trabajo**: si otro proceso tocó el archivo mientras estaba abierto, guardar pregunta antes de sobrescribir; y cada pocos segundos deja un respaldo de lo que está sin guardar en `~/.local/share/flint/backups/`, que se borra solo al guardar.
 - **Tuyo**: temas en `~/.config/flint/theme.toml` que se recargan solos al guardarlos, perfiles de teclado Flint/Vim/Emacs sobre una tabla tecla→acción, y plugins en Lua que registran comandos en la paleta (se cargan desde `./plugins`, `~/.config/flint/plugins/` y `/usr/share/flint/plugins/`).
 - **Anchos de pantalla reales**: tabuladores, CJK, emoji y acentos combinantes se miden en columnas de terminal, no en caracteres — el cursor cae donde está el texto.
 
 ## Estado
 
-Versión 0.2.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
+Versión 0.3.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
 
 - **La primera pasada del resaltado** al abrir un archivo es proporcional a su tamaño (≈1,1 s para 3 MB, sin color mientras tanto). Al editar ya no: el resaltado es incremental y reusa el árbol.
 - **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre y tener atajos propios; todavía no pueden definir un lenguaje nuevo ni reaccionar a eventos como guardar o abrir.
 - **LSP**: diagnósticos, autocompletado, ir a la definición y renombrar. Faltan hover, code actions y formateo.
-- **Tests**: 117, pero el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el LSP de punta a punta todavía se prueban a mano.
+- **Tests**: 126, pero el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el LSP de punta a punta todavía se prueban a mano.
 
 Afuera a propósito: paneles divididos (las pestañas y tmux cubren el caso) y terminal integrada.
 

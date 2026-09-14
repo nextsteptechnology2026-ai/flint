@@ -1,3 +1,4 @@
+mod busqueda;
 mod clipboard;
 mod config;
 mod editor;
@@ -183,6 +184,14 @@ struct App {
     /// por algo que quizás no se usa, y armarlo cada vez mantiene la lista al
     /// día sin tener que vigilar el disco.
     file_index: Vec<String>,
+    /// El proyecto leído a memoria mientras está abierta la búsqueda de texto
+    /// (Ctrl+N), la raíz de la que salen sus rutas, y lo que encontró la
+    /// última consulta. Se cargan al abrirla y se vacían al cerrarla.
+    search_files: Vec<busqueda::Archivo>,
+    search_root: PathBuf,
+    /// Si el proyecto no entró entero en el tope de lectura.
+    search_partial: bool,
+    search_hits: Vec<busqueda::Coincidencia>,
     /// La vista previa ya renderizada y de qué estado salió
     /// (buffer, versión del contenido, ancho). Renderizar Markdown y
     /// resaltar sus cercos de código es caro comparado con dibujar, así que
@@ -227,6 +236,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Comentar/descomentar líneas (^K)", Action::ToggleComment),
         ("Saltar al paréntesis/llave que hace pareja", Action::JumpMatchingBracket),
         ("Abrir archivo del proyecto… (^T)", Action::FindFilePrompt),
+        ("Buscar texto en el proyecto… (^N)", Action::SearchProjectPrompt),
         ("Ir a la línea…", Action::GotoLinePrompt),
         ("Ir a la definición (^] o F12)", Action::GotoDefinition),
         ("Renombrar el símbolo… (F6)", Action::RenamePrompt),
@@ -289,6 +299,7 @@ const HELP_TEXT: &str = concat!(
     "BUFFERS (varios archivos a la vez):\n",
     "    Ctrl+O  Abrir archivo (en un buffer nuevo)     Ctrl+W  Cerrar buffer actual\n",
     "    Ctrl+T  Buscador difuso de archivos del proyecto (abre en un buffer nuevo)\n",
+    "    Ctrl+N  Buscar texto en todos los archivos del proyecto\n",
     "    Ctrl+PageDown/PageUp  Siguiente/anterior buffer\n",
     "    La barra de pestañas responde al mouse: un clic cambia de buffer.\n",
     "\n",
@@ -559,6 +570,10 @@ fn main() -> io::Result<()> {
         macro_recording: None,
         macro_last: Vec::new(),
         file_index: Vec::new(),
+        search_files: Vec::new(),
+        search_root: PathBuf::new(),
+        search_partial: false,
+        search_hits: Vec::new(),
         config: cfg,
         clipboard: arboard::Clipboard::new().ok(),
         preview_lines: Vec::new(),
@@ -825,6 +840,14 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
             Mode::FilePicker { query, .. } => filtered_file_indices(app, query)
                 .into_iter()
                 .filter_map(|i| app.file_index.get(i).cloned())
+                .collect(),
+            Mode::ProjectSearch { .. } => app
+                .search_hits
+                .iter()
+                .map(|c| {
+                    let ruta = app.search_files.get(c.archivo).map_or("", |a| a.ruta.as_str());
+                    format!("{ruta}:{}: {}", c.linea + 1, c.texto)
+                })
                 .collect(),
             _ => Vec::new(),
         };
@@ -1638,6 +1661,7 @@ fn handle_key(app: &mut App, key: KeyEvent, page_size: usize) {
         Mode::Completion { .. } => handle_completion_key(app, key),
         Mode::Palette { .. } => handle_palette_key(app, key),
         Mode::FilePicker { .. } => handle_file_picker_key(app, key),
+        Mode::ProjectSearch { .. } => handle_project_search_key(app, key),
     }
 }
 
@@ -1942,6 +1966,7 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         }
         Action::InsertChar(c) => app.buffers[app.active].ed.insert_char_pairing(c),
         Action::FindFilePrompt => open_file_picker(app),
+        Action::SearchProjectPrompt => open_project_search(app),
         Action::JumpMatchingBracket => {
             let ed = &mut app.buffers[app.active].ed;
             ed.status = if ed.jump_to_matching_bracket() {
@@ -2360,6 +2385,136 @@ fn handle_file_picker_key(app: &mut App, key: KeyEvent) {
         _ => {}
     }
     app.buffers[app.active].ed.mode = Mode::FilePicker { query, selected };
+}
+
+fn open_project_search(app: &mut App) {
+    let raiz = raiz_del_proyecto(app);
+    let rutas = indexar_archivos(&raiz);
+
+    // Lo que tiene cada buffer abierto, por ruta relativa a la raíz: se
+    // busca en eso y no en el disco, para que aparezca lo que uno escribió
+    // aunque todavía no lo haya guardado.
+    let raiz_abs = std::fs::canonicalize(&raiz).unwrap_or(raiz.clone());
+    let abiertos: HashMap<String, String> = app
+        .buffers
+        .iter()
+        .filter_map(|b| {
+            let ruta = std::fs::canonicalize(b.ed.filename.as_ref()?).ok()?;
+            let relativa = ruta.strip_prefix(&raiz_abs).ok()?;
+            Some((relativa.to_string_lossy().to_string(), b.ed.rope.to_string()))
+        })
+        .collect();
+    (app.search_files, app.search_partial) =
+        busqueda::cargar(&raiz, &rutas, |r| abiertos.get(r).cloned());
+    app.search_root = raiz;
+    app.search_hits.clear();
+
+    // Si hay una selección de una sola línea, se busca eso de entrada: es
+    // el "¿dónde más se usa esto?" más rápido.
+    let ed = &app.buffers[app.active].ed;
+    let inicial = ed
+        .selected_text()
+        .filter(|t| !t.is_empty() && !t.contains('\n'))
+        .unwrap_or_default();
+    actualizar_busqueda(app, inicial);
+}
+
+/// Corre la consulta y deja el modo con el resultado. Se llama en cada
+/// tecla: la búsqueda es sobre memoria, no sobre el disco.
+fn actualizar_busqueda(app: &mut App, query: String) {
+    let r = busqueda::buscar(&app.search_files, &query);
+    let mut resumen = if query.is_empty() {
+        format!("({} archivo(s) en {})", app.search_files.len(), app.search_root.display())
+    } else if r.coincidencias.is_empty() {
+        "(sin coincidencias)".to_string()
+    } else if r.recortado {
+        format!("(las primeras {} — afiná la búsqueda)", r.coincidencias.len())
+    } else {
+        format!("({} en {} archivo(s))", r.coincidencias.len(), r.archivos)
+    };
+    if app.search_partial {
+        resumen.push_str(" — proyecto muy grande: se leyó solo una parte");
+    }
+    app.search_hits = r.coincidencias;
+    app.buffers[app.active].ed.mode = Mode::ProjectSearch { query, selected: 0, resumen };
+}
+
+fn cerrar_busqueda(app: &mut App) {
+    app.search_files = Vec::new();
+    app.search_hits = Vec::new();
+}
+
+/// Escribir busca, las flechas (y RePág/AvPág) eligen, Enter salta a la
+/// coincidencia y Esc cancela.
+fn handle_project_search_key(app: &mut App, key: KeyEvent) {
+    let (mut query, mut selected, resumen) =
+        match std::mem::replace(&mut app.buffers[app.active].ed.mode, Mode::Editing) {
+            Mode::ProjectSearch { query, selected, resumen } => (query, selected, resumen),
+            other => {
+                app.buffers[app.active].ed.mode = other;
+                return;
+            }
+        };
+    let total = app.search_hits.len();
+
+    match key.code {
+        KeyCode::Esc => {
+            cerrar_busqueda(app);
+            app.buffers[app.active].ed.status = "Cancelado".to_string();
+            return;
+        }
+        KeyCode::Enter => {
+            if let Some(c) = app.search_hits.get(selected).cloned() {
+                saltar_a_coincidencia(app, &c, &query);
+                cerrar_busqueda(app);
+                return;
+            }
+        }
+        KeyCode::Backspace => {
+            query.pop();
+            actualizar_busqueda(app, query);
+            return;
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            query.push(c);
+            actualizar_busqueda(app, query);
+            return;
+        }
+        KeyCode::Up if total > 0 => selected = selected.checked_sub(1).unwrap_or(total - 1),
+        KeyCode::Down if total > 0 => selected = (selected + 1) % total,
+        KeyCode::PageUp => selected = selected.saturating_sub(10),
+        KeyCode::PageDown if total > 0 => selected = (selected + 10).min(total - 1),
+        _ => {}
+    }
+    app.buffers[app.active].ed.mode = Mode::ProjectSearch { query, selected, resumen };
+}
+
+/// Lleva a la coincidencia: a la pestaña donde ya está abierto el archivo,
+/// o a una nueva. Queda como última búsqueda, así Ctrl+F y Enter siguen a la
+/// próxima aparición dentro del mismo archivo.
+fn saltar_a_coincidencia(app: &mut App, c: &busqueda::Coincidencia, query: &str) {
+    let Some(relativa) = app.search_files.get(c.archivo).map(|a| a.ruta.clone()) else { return };
+    let ruta = app.search_root.join(&relativa);
+    let destino = std::fs::canonicalize(&ruta).ok();
+    let abierto = app.buffers.iter().position(|b| {
+        destino.is_some()
+            && b.ed.filename.as_ref().and_then(|f| std::fs::canonicalize(f).ok()) == destino
+    });
+    match abierto {
+        Some(i) => app.active = i,
+        None => {
+            let antes = app.buffers.len();
+            open_file_into_new_buffer(app, ruta.to_string_lossy().to_string());
+            if app.buffers.len() == antes {
+                return; // no se pudo abrir; el estado ya dice por qué
+            }
+        }
+    }
+    let ed = &mut app.buffers[app.active].ed;
+    ed.goto_line(c.linea);
+    ed.cursor.col = c.col.min(ed.line_char_len(ed.cursor.line));
+    ed.last_search = Some(query.to_string());
+    ed.status = format!("{relativa}:{} — \"{query}\"", c.linea + 1);
 }
 
 fn run_palette_command(app: &mut App, idx: usize) {

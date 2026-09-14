@@ -141,8 +141,14 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
     if let Mode::Completion { selected, .. } = &ed.mode {
         draw_completion_popup(f, text_area, completion_matches, *selected, theme);
     }
-    if let Mode::Palette { selected, .. } | Mode::FilePicker { selected, .. } = &ed.mode {
-        draw_palette_popup(f, text_area, palette_matches, *selected, theme);
+    let popup = match &ed.mode {
+        Mode::Palette { selected, .. } => Some((" comandos ", *selected)),
+        Mode::FilePicker { selected, .. } => Some((" archivos ", *selected)),
+        Mode::ProjectSearch { selected, .. } => Some((" en el proyecto ", *selected)),
+        _ => None,
+    };
+    if let Some((titulo, selected)) = popup {
+        draw_palette_popup(f, text_area, palette_matches, selected, titulo, theme);
     }
 
     DrawAreas { text_area, tabs_area }
@@ -248,6 +254,7 @@ fn draw_message(f: &mut Frame, ed: &Editor, area: Rect, theme: &Theme) {
         }
         Mode::Palette { query, .. } => format!(" Paleta de comandos › {query}"),
         Mode::FilePicker { query, .. } => format!(" Abrir archivo › {query}"),
+        Mode::ProjectSearch { query, resumen, .. } => format!(" Buscar en el proyecto › {query}   {resumen}"),
         Mode::Editing => format!(" {}", ed.status),
     };
     let p = Paragraph::new(text).style(Style::default().fg(theme.bar_fg));
@@ -361,11 +368,27 @@ fn draw_completion_popup(
 /// La paleta de comandos se ancla arriba del área de texto (como en la
 /// mayoría de los editores), no cerca del cursor — no tiene una posición
 /// natural en el buffer, a diferencia del autocompletado.
-fn draw_palette_popup(f: &mut Frame, text_area: Rect, matches: &[String], selected: usize, theme: &Theme) {
+/// Desde qué renglón mostrar una lista de `visibles` renglones para que el
+/// seleccionado quede adentro. Sin esto, bajar más allá del décimo dejaba la
+/// selección fuera de la ventana: seguía elegida, pero ya no se veía.
+fn primera_visible(selected: usize, visibles: usize) -> usize {
+    selected.saturating_sub(visibles.saturating_sub(1))
+}
+
+fn draw_palette_popup(
+    f: &mut Frame,
+    text_area: Rect,
+    matches: &[String],
+    selected: usize,
+    titulo: &str,
+    theme: &Theme,
+) {
     let visible = matches.len().clamp(1, 10);
+    let desde = primera_visible(selected, visible);
+    // El ancho sale de toda la lista y no solo de lo visible: si no, la
+    // ventana cambiaría de tamaño al desplazarse por ella.
     let width = matches
         .iter()
-        .take(visible)
         .map(|m| m.chars().count())
         .max()
         .unwrap_or(20)
@@ -385,7 +408,7 @@ fn draw_palette_popup(f: &mut Frame, text_area: Rect, matches: &[String], select
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" comandos ")
+        .title(titulo)
         .style(Style::default().bg(theme.popup_bg).fg(theme.dim));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -398,8 +421,9 @@ fn draw_palette_popup(f: &mut Frame, text_area: Rect, matches: &[String], select
     } else {
         matches
             .iter()
-            .take(visible)
             .enumerate()
+            .skip(desde)
+            .take(visible)
             .map(|(i, label)| {
                 let style = if i == selected {
                     Style::default().bg(theme.selection_bg).fg(theme.selection_fg)
@@ -1126,6 +1150,15 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn la_lista_del_popup_sigue_a_la_seleccion() {
+        assert_eq!(primera_visible(0, 10), 0);
+        assert_eq!(primera_visible(9, 10), 0);
+        assert_eq!(primera_visible(10, 10), 1);
+        assert_eq!(primera_visible(25, 10), 16);
+        assert_eq!(primera_visible(3, 1), 3);
     }
 
     #[test]

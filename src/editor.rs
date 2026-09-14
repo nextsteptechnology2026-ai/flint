@@ -209,6 +209,11 @@ pub enum Mode {
     /// paleta y filtra igual; lo que cambia es la lista de abajo (rutas en
     /// vez de comandos) y qué hace Enter (abrir un buffer).
     FilePicker { query: String, selected: usize },
+    /// Buscar texto en todo el proyecto (Ctrl+N). Las coincidencias viven
+    /// en `App`, igual que la lista del buscador de archivos; acá va lo que
+    /// se escribe, cuál está resaltada y el resumen de la última búsqueda
+    /// ("12 en 3 archivos") para mostrarlo al lado.
+    ProjectSearch { query: String, selected: usize, resumen: String },
 }
 
 /// Qué secuencia de caracteres separa líneas en este buffer — detectada al

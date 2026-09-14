@@ -60,6 +60,7 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copiar / Cortar / Pegar — con el portapapeles del sistema |
 | `Ctrl+O` | Abrir un archivo en un buffer nuevo (pide la ruta) |
 | `Ctrl+T` | Buscador difuso de archivos del proyecto — escribí parte del nombre y `Enter` lo abre |
+| `Ctrl+N` | Buscar texto en todos los archivos del proyecto — `Enter` salta a la coincidencia |
 | `Ctrl+K` | Comentar / descomentar las líneas que toca la selección |
 | `Ctrl+U` | Empezar a grabar una macro, o terminarla si ya se está grabando |
 | `Ctrl+B` | Repetir la última macro grabada |
@@ -250,6 +251,18 @@ Escribí parte del nombre y `Enter` abre el archivo en un buffer nuevo — mismo
 La raíz se busca sola: desde el directorio del archivo abierto se sube mientras haya una marca de proyecto (`.git`, `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, `Makefile`) y se usa la más alta que la tenga, así que abrir `src/main.rs` ofrece el repositorio entero y no solo `src/`. Sin ninguna marca, la raíz es el directorio del propio archivo — en `/etc/hosts` nadie quiere indexar `/`.
 
 Se saltean los archivos y directorios ocultos y los que nunca se editan a mano (`.git`, `target`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.mypy_cache`), no se siguen enlaces simbólicos (un enlace hacia arriba sería un recorrido infinito) y hay topes de 20.000 archivos y 12 niveles de profundidad. El índice se arma al abrir el buscador, no al arrancar: así no hay que vigilar el disco y la lista siempre está al día.
+
+## Buscar en el proyecto (`Ctrl+N`)
+
+Busca texto en todos los archivos del proyecto mientras escribís. Cada renglón de la lista es `ruta:línea: texto`; `↑`/`↓` (o `RePág`/`AvPág` de a diez) eligen, `Enter` salta a esa línea —en la pestaña donde el archivo ya esté abierto, o en una nueva— y `Esc` cancela. Si había una selección de una sola línea al apretar `Ctrl+N`, se busca eso de entrada.
+
+- **Mayúsculas**: si lo que escribís es todo minúsculas, no las distingue (`error` encuentra `Error` y `ERROR`, tildes incluidas); en cuanto hay una mayúscula, sí (`Error` encuentra solo `Error`). Es la regla *smartcase* de Vim y ripgrep.
+- **Texto literal**, no regex, y una coincidencia por línea.
+- **Lo que ves, no lo que está en disco**: en un archivo abierto con cambios sin guardar se busca en lo que tiene el editor.
+- **Qué archivos**: la misma raíz y los mismos directorios ignorados que `Ctrl+T`. Además se saltean los binarios (los que tienen un byte nulo al principio), los que no son UTF-8 y los de más de 1 MB.
+- **Topes**: se muestran las primeras 1.000 coincidencias (la barra lo avisa: toca afinar la búsqueda), y se leen hasta 32 MB de proyecto. Si no entra entero, la barra también lo dice.
+
+El proyecto se lee a memoria al apretar `Ctrl+N` y se suelta al cerrar el buscador; cada tecla busca sobre esa copia, sin volver al disco. Con eso, un proyecto de 32 MB responde en unas decenas de milisegundos por tecla.
 
 ## Comentarios (`Ctrl+K`)
 
