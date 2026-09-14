@@ -350,9 +350,15 @@ mod tests {
     use super::*;
 
     fn opciones(toml_src: &str, archivo: &str) -> Options {
+        // Un archivo por llamada, no por nombre de archivo: los tests corren
+        // en paralelo, y dos que usaban "src/main.rs" con configuraciones
+        // distintas se pisaban el archivo entre sí. Fallaba una de cada seis
+        // corridas, y así se cayó la release de la 0.5.0 en macOS.
+        static SIGUIENTE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SIGUIENTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("flint-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let ruta = dir.join(format!("{}.toml", archivo.replace(['/', '.'], "_")));
+        let ruta = dir.join(format!("{n}-{}.toml", archivo.replace(['/', '.'], "_")));
         std::fs::write(&ruta, toml_src).unwrap();
         let (cfg, avisos) = Config::load(&ruta);
         assert!(avisos.is_empty(), "avisos inesperados: {avisos:?}");
