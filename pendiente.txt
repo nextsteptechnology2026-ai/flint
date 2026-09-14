@@ -12,14 +12,14 @@ Medianos:
    Lo que sigue faltando de la API: definir un lenguaje nuevo con su
    resaltado, y correr algo en respuesta a un evento (guardar, abrir) en vez
    de solo cuando el usuario invoca un comando.
-2. Tests: el hueco cambió de lugar. Hoy hay 126 y cubren columnas,
+2. Tests: el hueco cambió de lugar. Hoy hay 136 y cubren columnas,
    indentación (incluida la automática al apretar Enter), comentarios, pares
    de delimitadores, recorte al guardar, configuración, respaldos, el parseo
    de las respuestas de autocompletado, el dibujado en una terminal angosta,
    el resaltado incremental (contra el motor viejo y contra recalcular todo),
    las diecisiete gramáticas, la API de plugins y el traductor entre lo
    que manda un servidor LSP y lo que hace Flint (ir a la definición y
-   renombrar), y la búsqueda en el proyecto.
+   renombrar), la búsqueda en el proyecto, el hover y la lista de saltos.
    Sigue sin cubrirse el ciclo de edición completo: deshacer/rehacer,
    multi-cursor, búsqueda y reemplazo, y el cliente LSP de punta a punta
    (eso último se probó a mano contra rust-analyzer y contra pylsp, pero no
@@ -80,6 +80,31 @@ grandes mejor que las líneas en memoria de micro, el cliente LSP es nativo y
 no un plugin de terceros, los delimitadores se cuentan salteando cadenas y
 comentarios porque hay un árbol de verdad detrás, y la capa modal opcional
 con selección estructural no tiene equivalente ahí.
+
+Hover y lista de saltos — cerrado el 2026-09-13:
+- Hover (F1, K en NORMAL, "hover"): textDocument/hover, pedido solo si el
+  servidor anuncia hoverProvider. Entiende MarkupContent y las dos formas
+  viejas (MarkedString y lista). El Markdown pasa por markdown::render, el
+  mismo de la vista previa, así que el código sale resaltado; se le recortan
+  los espacios de relleno para que la ventana mida lo que mide el texto.
+  La respuesta se descarta si el cursor se movió mientras tanto.
+- La ventana nunca tapa la línea del cursor: abajo si entra, arriba si no, y
+  si no entra de ningún lado, del lado con más lugar y más baja. El
+  desplazamiento lo recorta el dibujado, que es quien sabe cuántas líneas
+  entraron.
+- Lista de saltos (Alt+←/Alt+→, "jump_back"/"jump_forward", src/saltos.rs):
+  por ruta canónica y no por índice de buffer, así sobrevive a cerrar
+  pestañas y reabre el archivo. Anotan: ir a la definición (desde el lugar
+  donde se pidió, no donde está el cursor al llegar la respuesta), búsqueda
+  en el proyecto, ir a línea y siguiente diagnóstico. Tope de 100.
+- Para eso KeyChord aprendió Alt: antes se ignoraba y "alt+x" en [keys] daba
+  error. Alt sobre una letra sin atar sigue escribiendo la letra.
+- Probado a mano en tmux contra rust-analyzer: hover de Vec::push y de
+  PathBuf (86 líneas, desplazado hasta el final y de vuelta), definición →
+  Alt+← → Alt+→ en el mismo archivo, y entre archivos cerrando la pestaña de
+  destino y volviendo a avanzar (la reabre).
+- Queda: signatureHelp (la ayuda de firmas mientras se escribe la llamada)
+  saldría casi entera de acá, con la misma ventana.
 
 Buscar texto en el proyecto — cerrado el 2026-09-13:
 - Ctrl+N (Ctrl+Shift+F llega igual que Ctrl+F en una terminal tradicional),

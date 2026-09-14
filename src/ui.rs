@@ -94,6 +94,8 @@ pub struct FrameData<'a> {
     pub tab_labels: &'a [String],
     pub active_tab: usize,
     pub preview: Option<&'a [Line<'static>]>,
+    /// El contenido del hover ya dibujado, cuando el modo es `Hover`.
+    pub hover: &'a [Line<'static>],
 }
 
 pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> DrawAreas {
@@ -103,6 +105,7 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
         tab_labels,
         active_tab,
         preview,
+        hover,
     } = *data;
     let size = f.area();
     let show_tabs = tab_labels.len() > 1;
@@ -131,10 +134,13 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
     let help_area = chunks[i + 2];
 
     draw_title(f, ed, title_area, theme);
-    match preview {
-        Some(lineas) => draw_preview(f, ed, lineas, text_area, theme),
+    let cursor = match preview {
+        Some(lineas) => {
+            draw_preview(f, ed, lineas, text_area, theme);
+            None
+        }
         None => draw_text(f, ed, text_area, theme),
-    }
+    };
     draw_message(f, ed, message_area, theme);
     draw_help(f, ed, help_area, theme);
 
@@ -149,6 +155,9 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
     };
     if let Some((titulo, selected)) = popup {
         draw_palette_popup(f, text_area, palette_matches, selected, titulo, theme);
+    }
+    if let Mode::Hover { offset } = &mut ed.mode {
+        *offset = draw_hover_popup(f, text_area, cursor, hover, *offset, theme);
     }
 
     DrawAreas { text_area, tabs_area }
@@ -254,6 +263,7 @@ fn draw_message(f: &mut Frame, ed: &Editor, area: Rect, theme: &Theme) {
         }
         Mode::Palette { query, .. } => format!(" Paleta de comandos › {query}"),
         Mode::FilePicker { query, .. } => format!(" Abrir archivo › {query}"),
+        Mode::Hover { .. } => " ↑↓ RePág AvPág desplazan · Esc cierra · cualquier otra tecla sigue editando".to_string(),
         Mode::ProjectSearch { query, resumen, .. } => format!(" Buscar en el proyecto › {query}   {resumen}"),
         Mode::Editing => format!(" {}", ed.status),
     };
@@ -365,9 +375,6 @@ fn draw_completion_popup(
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// La paleta de comandos se ancla arriba del área de texto (como en la
-/// mayoría de los editores), no cerca del cursor — no tiene una posición
-/// natural en el buffer, a diferencia del autocompletado.
 /// Desde qué renglón mostrar una lista de `visibles` renglones para que el
 /// seleccionado quede adentro. Sin esto, bajar más allá del décimo dejaba la
 /// selección fuera de la ventana: seguía elegida, pero ya no se veía.
@@ -375,6 +382,70 @@ fn primera_visible(selected: usize, visibles: usize) -> usize {
     selected.saturating_sub(visibles.saturating_sub(1))
 }
 
+/// Cuántas líneas del hover se ven a la vez. Más que esto tapa demasiado
+/// código; lo que no entra se recorre con las flechas.
+pub const HOVER_ALTO: usize = 15;
+
+/// Dónde va la ventana del hover: pegada abajo del cursor si entra, arriba
+/// si no, y si no entra en ninguno de los dos lados, en el que tenga más
+/// lugar y más baja — nunca encima de la línea del cursor, que es de lo que
+/// habla. Corrida a la izquierda lo que haga falta para no salirse por el
+/// borde derecho. Sin cursor visible, arriba del área de texto.
+fn area_de_hover(text_area: Rect, cursor: Option<(u16, u16)>, ancho: u16, alto: u16) -> Rect {
+    let ancho = ancho.min(text_area.width);
+    let fondo = text_area.y + text_area.height;
+    let (cx, cy) = cursor.unwrap_or((text_area.x, text_area.y.saturating_sub(1)));
+    let abajo = fondo.saturating_sub(cy + 1);
+    let arriba = cy.saturating_sub(text_area.y);
+    let (y, alto) = if alto <= abajo {
+        (cy + 1, alto)
+    } else if alto <= arriba {
+        (cy - alto, alto)
+    } else if abajo >= arriba {
+        (cy + 1, abajo)
+    } else {
+        (text_area.y, arriba)
+    };
+    let x = cx.min(text_area.x + text_area.width - ancho).max(text_area.x);
+    Rect { x, y, width: ancho, height: alto }
+}
+
+fn draw_hover_popup(
+    f: &mut Frame,
+    text_area: Rect,
+    cursor: Option<(u16, u16)>,
+    lineas: &[Line<'static>],
+    offset: usize,
+    theme: &Theme,
+) -> usize {
+    let pedidas = lineas.len().clamp(1, HOVER_ALTO);
+    // +2 de los bordes, +1 del espacio de la derecha.
+    let ancho = lineas.iter().map(Line::width).max().unwrap_or(10) as u16 + 3;
+    let area = area_de_hover(text_area, cursor, ancho, pedidas as u16 + 2);
+    // Puede haber quedado más baja de lo pedido si no entraba.
+    let visibles = (area.height as usize).saturating_sub(2).max(1);
+    let offset = offset.min(lineas.len().saturating_sub(visibles));
+
+    f.render_widget(Clear, area);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.popup_bg).fg(theme.dim));
+    if lineas.len() > visibles {
+        let hasta = (offset + visibles).min(lineas.len());
+        block = block.title(format!(" {}–{} de {} ", offset + 1, hasta, lineas.len()));
+    }
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let texto: Vec<Line> = lineas.iter().skip(offset).take(visibles).cloned().collect();
+    f.render_widget(Paragraph::new(texto), inner);
+    // Devuelve el desplazamiento ya recortado: bajar de más con las flechas
+    // no deja la ventana vacía, y subir después responde de inmediato.
+    offset
+}
+
+/// La paleta de comandos se ancla arriba del área de texto (como en la
+/// mayoría de los editores), no cerca del cursor — no tiene una posición
+/// natural en el buffer, a diferencia del autocompletado.
 fn draw_palette_popup(
     f: &mut Frame,
     text_area: Rect,
@@ -457,18 +528,20 @@ fn draw_preview(f: &mut Frame, ed: &mut Editor, lineas: &[Line<'static>], area: 
     f.render_widget(p, area);
 }
 
-fn draw_text(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
+/// Devuelve dónde quedó el cursor en la pantalla, si se ve: de ahí se
+/// cuelgan las ventanas que van junto a él.
+fn draw_text(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) -> Option<(u16, u16)> {
     if ed.wrap {
-        draw_text_wrapped(f, ed, area, theme);
+        draw_text_wrapped(f, ed, area, theme)
     } else {
-        draw_text_scroll(f, ed, area, theme);
+        draw_text_scroll(f, ed, area, theme)
     }
 }
 
 /// Sin ajuste de línea: una línea lógica es siempre una fila de pantalla: las
 /// que no entran se cortan, con scroll horizontal (`col_offset`) para
 /// llegar a lo que quedó afuera. El comportamiento de siempre, sin cambios.
-fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
+fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) -> Option<(u16, u16)> {
     let visible_rows = area.height as usize;
     let gutter_w = ed.gutter_width();
     let diag_col_w: u16 = 2;
@@ -597,7 +670,9 @@ fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
     let cursor_y = area.y + (ed.cursor.line.saturating_sub(ed.row_offset)) as u16;
     if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
         f.set_cursor_position((cursor_x, cursor_y));
+        return Some((cursor_x, cursor_y));
     }
+    None
 }
 
 /// Con ajuste de línea: cada línea lógica larga se parte en varias filas de
@@ -605,7 +680,7 @@ fn draw_text_scroll(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
 /// (siempre se ve todo el ancho de cada línea, tarde o temprano). Solo la
 /// primera fila de cada línea lógica lleva número/marca de diagnóstico en el
 /// margen; las siguientes son continuación.
-fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) {
+fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) -> Option<(u16, u16)> {
     let visible_rows = area.height as usize;
     let gutter_w = ed.gutter_width();
     let diag_col_w: u16 = 2;
@@ -799,7 +874,9 @@ fn draw_text_wrapped(f: &mut Frame, ed: &mut Editor, area: Rect, theme: &Theme) 
         && y < area.y + area.height
     {
         f.set_cursor_position((x, y));
+        return Some((x, y));
     }
+    None
 }
 
 /// Columnas locales [inicio,fin) que ocupa una selección en esta línea, si la
@@ -1150,6 +1227,25 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn el_hover_va_abajo_del_cursor_si_entra_y_si_no_arriba() {
+        let texto = Rect { x: 0, y: 1, width: 80, height: 20 };
+        // Cursor arriba: la ventana cae en la fila siguiente.
+        assert_eq!(area_de_hover(texto, Some((10, 3)), 30, 5), Rect { x: 10, y: 4, width: 30, height: 5 });
+        // Cursor abajo de todo: no entra debajo, va arriba.
+        assert_eq!(area_de_hover(texto, Some((10, 19)), 30, 5), Rect { x: 10, y: 14, width: 30, height: 5 });
+        // Cursor contra el borde derecho: se corre para no salirse.
+        assert_eq!(area_de_hover(texto, Some((70, 3)), 30, 5).x, 50);
+        // Más ancha o más alta que la pantalla: se recorta, no desborda.
+        let r = area_de_hover(texto, Some((0, 3)), 200, 50);
+        assert!(r.width <= 80 && r.y >= 1 && r.y + r.height <= 21);
+        // No entra de ningún lado: va donde hay más lugar, sin tapar el cursor.
+        let r = area_de_hover(texto, Some((0, 12)), 30, 17);
+        assert_eq!((r.y, r.height), (1, 11));
+        let r = area_de_hover(texto, Some((0, 8)), 30, 17);
+        assert_eq!((r.y, r.height), (9, 12));
     }
 
     #[test]

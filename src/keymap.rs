@@ -73,6 +73,12 @@ pub enum Action {
     FindFilePrompt,
     /// Buscar texto en todos los archivos del proyecto.
     SearchProjectPrompt,
+    /// Mostrar el tipo y la documentación de lo que está bajo el cursor (LSP).
+    Hover,
+    /// Volver a donde se estaba antes del último salto.
+    JumpBack,
+    /// Rehacer un salto después de haber vuelto.
+    JumpForward,
     /// Saltar al delimitador que hace pareja con el de al lado del cursor.
     JumpMatchingBracket,
     /// Empezar a grabar una macro, o terminarla si ya se está grabando.
@@ -116,6 +122,10 @@ pub struct KeyChord {
     pub token: KeyToken,
     pub ctrl: bool,
     pub shift: bool,
+    /// Alt (u Option en macOS). Las terminales lo mandan bien sobre las
+    /// flechas y las letras; sobre una letra sin atar, se sigue escribiendo
+    /// la letra, igual que antes de distinguirlo.
+    pub alt: bool,
 }
 
 impl KeyChord {
@@ -124,6 +134,7 @@ impl KeyChord {
             token,
             ctrl: false,
             shift: false,
+            alt: false,
         }
     }
     const fn with_shift(token: KeyToken) -> Self {
@@ -131,6 +142,7 @@ impl KeyChord {
             token,
             ctrl: false,
             shift: true,
+            alt: false,
         }
     }
     const fn with_ctrl(token: KeyToken) -> Self {
@@ -138,6 +150,15 @@ impl KeyChord {
             token,
             ctrl: true,
             shift: false,
+            alt: false,
+        }
+    }
+    const fn with_alt(token: KeyToken) -> Self {
+        KeyChord {
+            token,
+            ctrl: false,
+            shift: false,
+            alt: true,
         }
     }
 }
@@ -146,6 +167,7 @@ impl KeyChord {
 /// tecla que Flint no distingue (F-keys salvo F2, que se maneja aparte).
 pub fn chord_from_event(key: &KeyEvent) -> Option<KeyChord> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift_mod = key.modifiers.contains(KeyModifiers::SHIFT);
     let token = match key.code {
         KeyCode::Char(c) => KeyToken::Char(c),
@@ -179,7 +201,7 @@ pub fn chord_from_event(key: &KeyEvent) -> Option<KeyChord> {
         // en que venga.
         shift_mod || key.code == KeyCode::BackTab
     };
-    Some(KeyChord { token, ctrl, shift })
+    Some(KeyChord { token, ctrl, shift, alt })
 }
 
 /// Lo que cuelga de una tecla en la capa directa: o bien una acción directa,
@@ -232,6 +254,9 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::with_ctrl(T::Char('5')), GotoDefinition);
     d(KeyChord::plain(T::F(12)), GotoDefinition);
     d(KeyChord::plain(T::F(6)), RenamePrompt);
+    d(KeyChord::plain(T::F(1)), Hover);
+    d(KeyChord::with_alt(T::Left), JumpBack);
+    d(KeyChord::with_alt(T::Right), JumpForward);
     d(KeyChord::with_ctrl(T::PageDown), NextBuffer);
     d(KeyChord::with_ctrl(T::PageUp), PrevBuffer);
     d(KeyChord::plain(T::Enter), InsertNewline);
@@ -281,6 +306,8 @@ fn base_normal() -> HashMap<KeyChord, Action> {
     m.insert(KeyChord::plain(Char('m')), JumpMatchingBracket);
     m.insert(KeyChord::plain(Char('D')), GotoDefinition);
     m.insert(KeyChord::plain(Char('r')), RenamePrompt);
+    // La misma letra que en Vim y en Helix.
+    m.insert(KeyChord::plain(Char('K')), Hover);
     m.insert(KeyChord::plain(Char('d')), NormalDelete);
     m.insert(KeyChord::plain(Char('c')), NormalChange);
     m.insert(KeyChord::plain(Char('y')), NormalYank);
@@ -453,6 +480,9 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("jump_matching_bracket", JumpMatchingBracket),
         ("find_file", FindFilePrompt),
         ("search_project", SearchProjectPrompt),
+        ("hover", Hover),
+        ("jump_back", JumpBack),
+        ("jump_forward", JumpForward),
         ("goto_line", GotoLinePrompt),
         ("goto_definition", GotoDefinition),
         ("rename", RenamePrompt),
@@ -500,6 +530,7 @@ pub fn all_action_names() -> Vec<&'static str> {
 pub fn parse_chord(s: &str) -> Result<KeyChord, String> {
     let mut ctrl = false;
     let mut shift = false;
+    let mut alt = false;
     let partes: Vec<&str> = s.split('+').map(str::trim).collect();
     // Un "+" suelto ("ctrl++") deja una parte vacía en el medio y la tecla
     // real es el propio "+": se rearma en vez de rechazarlo.
@@ -513,9 +544,10 @@ pub fn parse_chord(s: &str) -> Result<KeyChord, String> {
         match m.to_ascii_lowercase().as_str() {
             "ctrl" | "control" | "c" => ctrl = true,
             "shift" | "s" => shift = true,
-            "alt" | "meta" | "super" => {
+            "alt" | "meta" | "option" => alt = true,
+            "super" | "cmd" | "win" => {
                 return Err(format!(
-                    "\"{s}\": Flint todavía no distingue el modificador \"{m}\" en el teclado"
+                    "\"{s}\": las terminales no le mandan \"{m}\" a los programas"
                 ));
             }
             otro => return Err(format!("\"{s}\": modificador desconocido \"{otro}\"")),
@@ -587,9 +619,10 @@ pub fn parse_chord(s: &str) -> Result<KeyChord, String> {
             token: KeyToken::Char(c),
             ctrl,
             shift: false,
+            alt,
         });
     }
-    Ok(KeyChord { token, ctrl, shift })
+    Ok(KeyChord { token, ctrl, shift, alt })
 }
 
 /// Reemplaza (o borra, con `None`) lo que cuelga de `chord` en la capa
@@ -633,6 +666,16 @@ mod tests_teclas_de_funcion {
         assert_eq!(parse_chord("f"), Ok(KeyChord::plain(KeyToken::Char('f'))));
         assert!(parse_chord("f13").is_err());
         assert!(parse_chord("f0").is_err());
+    }
+
+    #[test]
+    fn alt_se_escribe_y_se_distingue() {
+        assert_eq!(parse_chord("alt+left"), Ok(KeyChord::with_alt(KeyToken::Left)));
+        assert_eq!(parse_chord("meta+x"), Ok(KeyChord::with_alt(KeyToken::Char('x'))));
+        assert_ne!(parse_chord("alt+x"), parse_chord("x"));
+        let evento = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(chord_from_event(&evento), Some(KeyChord::with_alt(KeyToken::Left)));
+        assert!(parse_chord("super+x").is_err());
     }
 
     #[test]

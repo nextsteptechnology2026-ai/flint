@@ -214,6 +214,9 @@ pub enum Mode {
     /// se escribe, cuál está resaltada y el resumen de la última búsqueda
     /// ("12 en 3 archivos") para mostrarlo al lado.
     ProjectSearch { query: String, selected: usize, resumen: String },
+    /// La ventana de hover (F1) abierta junto al cursor. Las líneas ya
+    /// dibujadas viven en `App`; acá solo cuánto se desplazó.
+    Hover { offset: usize },
 }
 
 /// Qué secuencia de caracteres separa líneas en este buffer — detectada al

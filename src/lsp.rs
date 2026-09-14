@@ -34,6 +34,14 @@ pub enum Pending {
     Rename {
         nombre: String,
     },
+    /// "Hover": qué es lo que está bajo el cursor. Guarda dónde estaba el
+    /// cursor al pedirlo: si se movió antes de que llegue la respuesta, ya
+    /// no corresponde mostrarla.
+    Hover {
+        buffer: usize,
+        desde: (usize, usize),
+        palabra: String,
+    },
 }
 
 /// Un cambio de rango para `did_change_incremental` — posiciones en
@@ -184,7 +192,11 @@ impl LspClient {
                     // `LocationLink`, que trae el rango exacto del nombre
                     // además del del cuerpo entero de la definición.
                     "definition": { "linkSupport": true },
-                    "rename": { "prepareSupport": false }
+                    "rename": { "prepareSupport": false },
+                    // Markdown primero: es lo que mandan rust-analyzer y
+                    // pylsp, y Flint ya sabe dibujarlo con el código
+                    // resaltado.
+                    "hover": { "contentFormat": ["markdown", "plaintext"] }
                 }
             }
         });
@@ -297,6 +309,25 @@ impl LspClient {
                 "position": { "line": line, "character": character }
             }),
             Pending::Definition { buffer, desde, palabra },
+        )
+    }
+
+    pub fn request_hover(
+        &mut self,
+        uri: &str,
+        line: usize,
+        character: usize,
+        buffer: usize,
+        desde: (usize, usize),
+        palabra: String,
+    ) -> io::Result<u64> {
+        self.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            }),
+            Pending::Hover { buffer, desde, palabra },
         )
     }
 

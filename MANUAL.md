@@ -61,6 +61,8 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+O` | Abrir un archivo en un buffer nuevo (pide la ruta) |
 | `Ctrl+T` | Buscador difuso de archivos del proyecto — escribí parte del nombre y `Enter` lo abre |
 | `Ctrl+N` | Buscar texto en todos los archivos del proyecto — `Enter` salta a la coincidencia |
+| `F1` | Tipo y documentación de lo que está bajo el cursor (LSP) |
+| `Alt+←` / `Alt+→` | Volver a donde estabas antes de un salto / rehacer el salto |
 | `Ctrl+K` | Comentar / descomentar las líneas que toca la selección |
 | `Ctrl+U` | Empezar a grabar una macro, o terminarla si ya se está grabando |
 | `Ctrl+B` | Repetir la última macro grabada |
@@ -90,6 +92,7 @@ La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplaza
 | `x` | Seleccionar la línea actual (repetida, extiende una línea más) |
 | `n` | Expandir la selección al nodo de sintaxis que la contiene (repetida, sube un nivel del árbol) |
 | `m` | Saltar al paréntesis, corchete o llave que hace pareja con el de al lado del cursor |
+| `K` | Tipo y documentación de lo que está bajo el cursor (LSP), como en Vim y Helix |
 | `d` | Cortar: borra el rango si hay selección (si no, el carácter siguiente) y lo manda al portapapeles del sistema — se puede pegar después con `p`, o en cualquier otra aplicación |
 | `c` | Cambiar: corta la selección (si hay, igual que `d`) y entra a INSERT |
 | `y` | Copiar la selección al portapapeles del sistema |
@@ -224,7 +227,7 @@ El patrón acepta `*` (cualquier cosa, incluso nada) y `?` (exactamente un cará
 "g" = "move_home"
 ```
 
-Los modificadores son `ctrl` y `shift`; `alt` todavía no se distingue. Sobre una letra, `shift` va en el propio carácter (`"shift+a"` y `"A"` son la misma tecla). Los nombres de tecla especiales son `space`, `tab`, `enter`, `esc`, `backspace`, `delete`, `home`, `end`, `pageup`, `pagedown` y las cuatro flechas.
+Los modificadores son `ctrl`, `shift` y `alt` (también `meta` u `option`). `super`/`cmd` no: las terminales no se lo mandan a los programas. Sobre una letra, `shift` va en el propio carácter (`"shift+a"` y `"A"` son la misma tecla). Los nombres de tecla especiales son `space`, `tab`, `enter`, `esc`, `backspace`, `delete`, `home`, `end`, `pageup`, `pagedown` y las cuatro flechas.
 
 `flint --actions` lista todos los nombres de acción; la paleta de comandos muestra el de cada renglón. `"none"` desata la tecla a propósito, y se distingue de un nombre mal escrito: lo primero es una decisión, lo segundo un aviso al arrancar.
 
@@ -492,8 +495,9 @@ También están en la paleta (`Ctrl+P`), que es donde buscarlas si no te acordá
 la tecla.
 
 **Ir a la definición** salta al archivo y la línea donde está definido. Si la
-definición está en otro archivo, lo abre en un buffer nuevo y salta ahí. La
-barra de estado dice de qué línea veniste, para poder volver a mano. Cuando
+definición está en otro archivo, lo abre en un buffer nuevo y salta ahí.
+`Alt+←` vuelve a donde estabas (ver [Lista de saltos](#lista-de-saltos-alt-alt)),
+y la barra de estado además dice de qué línea veniste. Cuando
 hay más de una definición (un *trait* implementado varias veces, por ejemplo)
 salta a la primera y dice cuántas había.
 
@@ -523,6 +527,51 @@ Una nota sobre `Ctrl+]`: una terminal en modo tradicional no puede
 distinguirlo de `Ctrl+5`, porque las dos mandan el mismo byte. Flint ata las
 dos a lo mismo, así que la tecla clásica funciona; y si escribís `"ctrl+]"` en
 `[keys]` del config.toml, se traduce sola.
+
+## Hover: qué es esto (`F1`, LSP)
+
+`F1` (o `K` en la capa modal) le pregunta al servidor de lenguaje qué es lo que
+está bajo el cursor, y lo muestra en una ventana pegada a él: la firma o el
+tipo, y la documentación. Lo que manda el servidor es Markdown, así que se ve
+formateado y con el código resaltado con el mismo tree-sitter del editor.
+
+- `↑`/`↓` y `RePág`/`AvPág` recorren la ventana si no entra entera; el título
+  dice qué parte se está viendo ("16–30 de 40").
+- `Esc` la cierra. **Cualquier otra tecla** la cierra y además hace lo suyo:
+  no hace falta cerrarla para seguir escribiendo o moverse. Un clic también la
+  cierra; la rueda del mouse no.
+- Va abajo del cursor si entra, arriba si no; si no entra de ningún lado, del
+  lado con más lugar y más baja. Nunca tapa la línea de la que habla.
+- Si el cursor se movió antes de que el servidor conteste, la respuesta se
+  descarta: hablaría de algo que ya no está a la vista.
+- Si el servidor no tiene nada que decir (un espacio en blanco, un comentario),
+  lo dice la barra de estado en vez de abrir una ventana vacía.
+
+Como definición y renombre, necesita un servidor que anuncie que sabe hacerlo
+(`hoverProvider`); rust-analyzer y pylsp lo hacen.
+
+## Lista de saltos (`Alt+←`, `Alt+→`)
+
+Después de un salto, `Alt+←` vuelve a donde estabas, y `Alt+→` rehace el
+camino, como atrás y adelante en un navegador. Funciona entre archivos: si la
+pestaña a la que hay que volver se cerró, se abre de nuevo.
+
+Solo cuentan los **saltos**, no cada movimiento del cursor:
+
+- ir a la definición (`F12`),
+- elegir una coincidencia de la búsqueda en el proyecto (`Ctrl+N`),
+- ir a una línea,
+- saltar al siguiente diagnóstico (`Ctrl+G`).
+
+Si cada flecha dejara una marca, volver sería retroceder de a una letra. Un
+salto nuevo después de haber vuelto borra el camino hacia adelante (igual que
+seguir un link en un navegador), dos saltos seguidos desde la misma línea
+cuentan como uno, y se recuerdan los últimos cien. La barra de estado dice
+cuántos quedan para cada lado.
+
+Algunas terminales de macOS mandan `Alt+←` como "palabra anterior" en vez de
+la flecha con el modificador; si no responde, en `[keys]` se puede atar
+`jump_back` y `jump_forward` a otra tecla.
 
 ## Autocompletado (LSP)
 

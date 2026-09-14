@@ -7,6 +7,7 @@ mod markdown;
 mod keymap;
 mod lsp;
 mod plugins;
+mod saltos;
 mod theme;
 mod ui;
 
@@ -134,6 +135,7 @@ struct App {
     /// atiende deja al usuario esperando una respuesta que no va a llegar.
     lsp_definition: bool,
     lsp_rename: bool,
+    lsp_hover: bool,
     /// Salta el margen de espera de la sincronización. Se prende solo para
     /// las peticiones que dependen de que el servidor tenga el texto de
     /// ahora mismo (ir a la definición, renombrar).
@@ -192,6 +194,11 @@ struct App {
     /// Si el proyecto no entró entero en el tope de lectura.
     search_partial: bool,
     search_hits: Vec<busqueda::Coincidencia>,
+    /// A dónde vuelve Alt+← y a dónde avanza Alt+→.
+    saltos: saltos::ListaSaltos,
+    /// El hover abierto, ya dibujado: Markdown con el código resaltado. Se
+    /// arma una vez al llegar la respuesta y no en cada frame.
+    hover_lines: Vec<ratatui::text::Line<'static>>,
     /// La vista previa ya renderizada y de qué estado salió
     /// (buffer, versión del contenido, ancho). Renderizar Markdown y
     /// resaltar sus cercos de código es caro comparado con dibujar, así que
@@ -240,6 +247,9 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Ir a la línea…", Action::GotoLinePrompt),
         ("Ir a la definición (^] o F12)", Action::GotoDefinition),
         ("Renombrar el símbolo… (F6)", Action::RenamePrompt),
+        ("Qué es esto: tipo y documentación (F1)", Action::Hover),
+        ("Volver al lugar anterior (Alt+←)", Action::JumpBack),
+        ("Avanzar al lugar siguiente (Alt+→)", Action::JumpForward),
         ("Grabar/terminar macro (^U)", Action::MacroRecord),
         ("Repetir la macro (^B)", Action::MacroPlay),
     ];
@@ -291,6 +301,8 @@ const HELP_TEXT: &str = concat!(
     "    Ctrl+U  Grabar/terminar macro          Ctrl+B  Repetir la macro\n",
     "    Ctrl+E  Vista previa de Markdown (solo en .md/.markdown)\n",
     "    Ctrl+] o F12   Ir a la definición (LSP)      F6  Renombrar el símbolo (LSP)\n",
+    "    F1      Tipo y documentación de lo que está bajo el cursor (LSP)\n",
+    "    Alt+← / Alt+→   Volver al lugar anterior / avanzar (después de un salto)\n",
     "    Tab / Shift+Tab   Indentar / des-indentar el bloque seleccionado\n",
     "    Shift+flechas     Seleccionar (también Shift+Inicio/Fin/RePág/AvPág)\n",
     "    F2      Activar/desactivar la capa modal (NORMAL/INSERT)\n",
@@ -308,6 +320,7 @@ const HELP_TEXT: &str = concat!(
     "    w/x   Seleccionar palabra/línea   n     Expandir selección (sintaxis)\n",
     "    m     Saltar al delimitador que hace pareja\n",
     "    D     Ir a la definición          r     Renombrar el símbolo\n",
+    "    K     Tipo y documentación (LSP)\n",
     "    d/c   Borrar/Cambiar              y/p   Copiar/Pegar\n",
     "    i/a/I/A   Insertar (selección/línea)     o/O   Abrir línea abajo/arriba\n",
     "    u/U   Deshacer/Rehacer            Esc   Deseleccionar / volver\n",
@@ -539,8 +552,8 @@ fn main() -> io::Result<()> {
     let lang = buffer.lang;
     let (lsp_client, doc_uri, lsp_lang_id, caps) =
         setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme, &cfg);
-    let (lsp_incremental, lsp_definition, lsp_rename) =
-        (caps.incremental, caps.definition, caps.rename);
+    let (lsp_incremental, lsp_definition, lsp_rename, lsp_hover) =
+        (caps.incremental, caps.definition, caps.rename, caps.hover);
     buffer.doc_uri = doc_uri;
     buffer.lsp_lang_id = lsp_lang_id;
 
@@ -554,6 +567,7 @@ fn main() -> io::Result<()> {
         lsp_incremental,
         lsp_definition,
         lsp_rename,
+        lsp_hover,
         lsp_forzar_sync: false,
         last_was_select_line: false,
         keymap,
@@ -574,6 +588,8 @@ fn main() -> io::Result<()> {
         search_root: PathBuf::new(),
         search_partial: false,
         search_hits: Vec::new(),
+        saltos: saltos::ListaSaltos::default(),
+        hover_lines: Vec::new(),
         config: cfg,
         clipboard: arboard::Clipboard::new().ok(),
         preview_lines: Vec::new(),
@@ -664,6 +680,7 @@ struct Capacidades {
     incremental: bool,
     definition: bool,
     rename: bool,
+    hover: bool,
 }
 
 impl Capacidades {
@@ -680,6 +697,7 @@ impl Capacidades {
             incremental: supports_incremental_sync(result),
             definition: tiene("definitionProvider"),
             rename: tiene("renameProvider"),
+            hover: tiene("hoverProvider"),
         }
     }
 }
@@ -712,12 +730,16 @@ fn finish_init(
     let _ = client.send_initialized();
     let _ = client.did_open(uri, lang_id, &ed.rope.to_string());
     let sync_tag = if caps.incremental { " (sync incremental)" } else { " (sync completo)" };
-    let extras = match (caps.definition, caps.rename) {
-        (true, true) => " · definición y renombre",
-        (true, false) => " · definición",
-        (false, true) => " · renombre",
-        (false, false) => "",
-    };
+    let sabe: Vec<&str> = [
+        (caps.definition, "definición"),
+        (caps.rename, "renombre"),
+        (caps.hover, "hover"),
+    ]
+    .iter()
+    .filter(|(si, _)| *si)
+    .map(|(_, nombre)| *nombre)
+    .collect();
+    let extras = if sabe.is_empty() { String::new() } else { format!(" · {}", sabe.join(", ")) };
     ed.status = format!("{} · {cmd} listo{sync_tag}{extras}", ed.status);
     (true, caps)
 }
@@ -873,6 +895,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
                 tab_labels: &tab_labels,
                 active_tab: app.active,
                 preview: preview_lines.map(Vec::as_slice),
+                hover: &app.hover_lines,
             };
             let areas = ui::draw(f, &mut app.buffers[app.active].ed, &datos, &app.theme);
             app.text_area = areas.text_area;
@@ -986,6 +1009,9 @@ fn handle_lsp_message(app: &mut App, msg: Value) {
             }
             Some(lsp::Pending::Definition { buffer, desde, palabra }) => {
                 aplicar_definicion(app, buffer, desde, &palabra, msg.get("result"));
+            }
+            Some(lsp::Pending::Hover { buffer, desde, palabra }) => {
+                aplicar_hover(app, buffer, desde, &palabra, msg.get("result"));
             }
             Some(lsp::Pending::Rename { nombre }) => {
                 aplicar_renombre(app, &nombre, msg.get("result"), msg.get("error"));
@@ -1207,6 +1233,9 @@ fn aplicar_definicion(
         return;
     };
 
+    if let Some(desde) = lugar_de(app, buffer, desde) {
+        app.saltos.registrar(desde);
+    }
     app.active = idx;
     let ed = &mut app.buffers[idx].ed;
     let linea = linea.min(ed.line_count().saturating_sub(1));
@@ -1461,6 +1490,216 @@ fn goto_definition(app: &mut App) {
     }
 }
 
+fn pedir_hover(app: &mut App) {
+    if app.lsp.is_some() && !app.lsp_hover {
+        app.buffers[app.active].ed.status =
+            "El servidor de lenguaje no sabe mostrar información (hover)".to_string();
+        return;
+    }
+    let Some((uri, linea, col)) = preparar_peticion(app, "La información de hover") else {
+        return;
+    };
+    let ed = &app.buffers[app.active].ed;
+    let palabra = ed.word_under_cursor();
+    let desde = (ed.cursor.line, ed.cursor.col);
+    let activo = app.active;
+    let enviado = app
+        .lsp
+        .as_mut()
+        .map(|c| c.request_hover(&uri, linea, col, activo, desde, palabra.clone()))
+        .transpose();
+    if let Err(e) = enviado {
+        app.buffers[app.active].ed.status = format!("No pude preguntarle al servidor: {e}");
+    }
+}
+
+/// El texto de una respuesta de hover y si es Markdown. El protocolo admite
+/// tres formas para `contents`: `MarkupContent` (`{kind, value}`, la
+/// actual), y las dos viejas, `MarkedString` suelto (un string Markdown o
+/// `{language, value}`, que es un bloque de código) o una lista de ellos.
+fn contenido_de_hover(result: &Value) -> Option<(String, bool)> {
+    fn marked(v: &Value) -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(o) => {
+                let valor = o.get("value")?.as_str()?;
+                let lenguaje = o.get("language").and_then(Value::as_str).unwrap_or("");
+                Some(format!("```{lenguaje}\n{valor}\n```"))
+            }
+            _ => None,
+        }
+    }
+    let contents = result.get("contents")?;
+    let (texto, markdown) = match contents {
+        Value::Object(o) if o.contains_key("kind") => (
+            o.get("value")?.as_str()?.to_string(),
+            o.get("kind").and_then(Value::as_str) == Some("markdown"),
+        ),
+        Value::Array(lista) => {
+            let partes: Vec<String> = lista.iter().filter_map(marked).collect();
+            (partes.join("\n\n"), true)
+        }
+        otro => (marked(otro)?, true),
+    };
+    let texto = texto.trim().to_string();
+    (!texto.is_empty()).then_some((texto, markdown))
+}
+
+/// Parte texto plano en renglones de hasta `ancho` columnas. El Markdown lo
+/// reparte `markdown::render`; esto es para los servidores que mandan texto
+/// sin formato.
+fn envolver_texto_plano(texto: &str, ancho: usize) -> Vec<ratatui::text::Line<'static>> {
+    let mut lineas = Vec::new();
+    for renglon in texto.lines() {
+        let mut actual = String::new();
+        let mut columnas = 0usize;
+        for c in renglon.chars() {
+            let w = editor::char_display_width(c, columnas, 4);
+            if columnas + w > ancho && !actual.is_empty() {
+                lineas.push(ratatui::text::Line::from(std::mem::take(&mut actual)));
+                columnas = 0;
+            }
+            if c == '\t' {
+                actual.push_str(&" ".repeat(w));
+            } else {
+                actual.push(c);
+            }
+            columnas += w;
+        }
+        lineas.push(ratatui::text::Line::from(actual));
+    }
+    lineas
+}
+
+fn aplicar_hover(app: &mut App, buffer: usize, desde: (usize, usize), palabra: &str, result: Option<&Value>) {
+    // Si el cursor se movió o se cambió de pestaña mientras el servidor
+    // pensaba, la respuesta habla de algo que ya no está a la vista.
+    let ed = &app.buffers[app.active].ed;
+    if app.active != buffer || (ed.cursor.line, ed.cursor.col) != desde || !matches!(ed.mode, Mode::Editing) {
+        return;
+    }
+    let Some((texto, markdown)) = result.and_then(contenido_de_hover) else {
+        app.buffers[app.active].ed.status = if palabra.is_empty() {
+            "El servidor no tiene información de esto".to_string()
+        } else {
+            format!("El servidor no tiene información de \"{palabra}\"")
+        };
+        return;
+    };
+    let ancho = (app.text_area.width as usize).saturating_sub(4).clamp(20, 90);
+    let mut lineas = if markdown {
+        markdown::render(&texto, ancho, &app.theme, &|nombre| markdown::resaltador_para(nombre))
+    } else {
+        envolver_texto_plano(&texto, ancho)
+    };
+    // El renderizado rellena con espacios hasta el ancho disponible, que en
+    // la vista previa ocupa la pantalla entera; acá la ventana tiene que
+    // medir lo que mide el texto.
+    for linea in lineas.iter_mut() {
+        while let Some(ultimo) = linea.spans.last_mut() {
+            let recortado = ultimo.content.trim_end().to_string();
+            if recortado.is_empty() {
+                linea.spans.pop();
+            } else {
+                ultimo.content = recortado.into();
+                break;
+            }
+        }
+    }
+    // Y deja renglones vacíos entre bloques; en las puntas solo agrandan la
+    // ventana.
+    while lineas.last().is_some_and(|l| l.width() == 0) {
+        lineas.pop();
+    }
+    while lineas.first().is_some_and(|l| l.width() == 0) {
+        lineas.remove(0);
+    }
+    app.hover_lines = lineas;
+    app.buffers[app.active].ed.mode = Mode::Hover { offset: 0 };
+}
+
+/// Con el hover abierto, las flechas lo recorren y Esc lo cierra. Cualquier
+/// otra tecla lo cierra y además hace lo suyo: no hace falta cerrarlo para
+/// seguir escribiendo.
+fn handle_hover_key(app: &mut App, key: KeyEvent, page_size: usize) {
+    let Mode::Hover { offset } = app.buffers[app.active].ed.mode else { return };
+    // El tope fino lo pone el dibujado, que sabe cuántas líneas entraron.
+    let maximo = app.hover_lines.len().saturating_sub(1);
+    let nuevo = match key.code {
+        KeyCode::Up => Some(offset.saturating_sub(1)),
+        KeyCode::Down => Some((offset + 1).min(maximo)),
+        KeyCode::PageUp => Some(offset.saturating_sub(ui::HOVER_ALTO)),
+        KeyCode::PageDown => Some((offset + ui::HOVER_ALTO).min(maximo)),
+        _ => None,
+    };
+    if let Some(offset) = nuevo {
+        app.buffers[app.active].ed.mode = Mode::Hover { offset };
+        return;
+    }
+    app.buffers[app.active].ed.mode = Mode::Editing;
+    app.hover_lines.clear();
+    if key.code != KeyCode::Esc {
+        handle_key(app, key, page_size);
+    }
+}
+
+/// Dónde está el cursor del buffer `idx`, como lugar de la lista de saltos.
+/// La ruta va canónica para que el mismo archivo abierto por dos caminos
+/// (`src/main.rs` y `./src/main.rs`) cuente como uno.
+fn lugar_de(app: &App, idx: usize, (linea, col): (usize, usize)) -> Option<saltos::Lugar> {
+    let ruta = app.buffers.get(idx)?.ed.filename.as_ref()?;
+    let ruta = std::fs::canonicalize(ruta).unwrap_or_else(|_| ruta.clone());
+    Some(saltos::Lugar { ruta, linea, col })
+}
+
+fn lugar_actual(app: &App) -> Option<saltos::Lugar> {
+    let ed = &app.buffers[app.active].ed;
+    lugar_de(app, app.active, (ed.cursor.line, ed.cursor.col))
+}
+
+/// Anota dónde está el cursor antes de un salto, para poder volver.
+fn registrar_salto(app: &mut App) {
+    if let Some(lugar) = lugar_actual(app) {
+        app.saltos.registrar(lugar);
+    }
+}
+
+fn saltar_en_la_lista(app: &mut App, atras: bool) {
+    let actual = lugar_actual(app);
+    let destino = if atras { app.saltos.volver(actual) } else { app.saltos.avanzar(actual) };
+    let Some(destino) = destino else {
+        app.buffers[app.active].ed.status =
+            if atras { "No hay a dónde volver" } else { "No hay a dónde avanzar" }.to_string();
+        return;
+    };
+    let abierto = app.buffers.iter().position(|b| {
+        b.ed.filename
+            .as_ref()
+            .map(|f| std::fs::canonicalize(f).unwrap_or_else(|_| f.clone()))
+            .as_ref()
+            == Some(&destino.ruta)
+    });
+    match abierto {
+        Some(i) => app.active = i,
+        None => {
+            // La pestaña se cerró desde entonces: se vuelve a abrir.
+            let antes = app.buffers.len();
+            open_file_into_new_buffer(app, destino.ruta.to_string_lossy().to_string());
+            if app.buffers.len() == antes {
+                return;
+            }
+        }
+    }
+    let (atras_n, adelante_n) = (app.saltos.cuantos_atras(), app.saltos.cuantos_adelante());
+    let ed = &mut app.buffers[app.active].ed;
+    ed.goto_line(destino.linea);
+    ed.cursor.col = destino.col.min(ed.line_char_len(ed.cursor.line));
+    ed.status = format!(
+        "Línea {} · {atras_n} atrás, {adelante_n} adelante",
+        ed.cursor.line + 1
+    );
+}
+
 fn rename_prompt(app: &mut App) {
     if !app.lsp_rename {
         app.buffers[app.active].ed.status =
@@ -1662,6 +1901,7 @@ fn handle_key(app: &mut App, key: KeyEvent, page_size: usize) {
         Mode::Palette { .. } => handle_palette_key(app, key),
         Mode::FilePicker { .. } => handle_file_picker_key(app, key),
         Mode::ProjectSearch { .. } => handle_project_search_key(app, key),
+        Mode::Hover { .. } => handle_hover_key(app, key, page_size),
     }
 }
 
@@ -1869,6 +2109,7 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
             };
         }
         Action::JumpDiagnostic => {
+            registrar_salto(app);
             app.buffers[app.active].ed.status = app.buffers[app.active]
                 .ed
                 .jump_to_next_diagnostic()
@@ -1985,6 +2226,9 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
             };
         }
         Action::GotoDefinition => goto_definition(app),
+        Action::Hover => pedir_hover(app),
+        Action::JumpBack => saltar_en_la_lista(app, true),
+        Action::JumpForward => saltar_en_la_lista(app, false),
         Action::RenamePrompt => rename_prompt(app),
         Action::ToggleComment => toggle_comment(app),
         Action::ToggleWrap => {
@@ -2495,6 +2739,7 @@ fn handle_project_search_key(app: &mut App, key: KeyEvent) {
 fn saltar_a_coincidencia(app: &mut App, c: &busqueda::Coincidencia, query: &str) {
     let Some(relativa) = app.search_files.get(c.archivo).map(|a| a.ruta.clone()) else { return };
     let ruta = app.search_root.join(&relativa);
+    registrar_salto(app);
     let destino = std::fs::canonicalize(&ruta).ok();
     let abierto = app.buffers.iter().position(|b| {
         destino.is_some()
@@ -3173,6 +3418,10 @@ fn submit_prompt(app: &mut App, kind: PromptKind, buffer: String) {
         PromptKind::OpenFile => open_file_into_new_buffer(app, buffer),
         PromptKind::SaveAs { then_quit } => handle_save_as(app, then_quit, buffer),
         PromptKind::Rename { palabra } => pedir_renombre(app, palabra, buffer),
+        PromptKind::GotoLine => {
+            registrar_salto(app);
+            submit_prompt_editor(&mut app.buffers[app.active].ed, PromptKind::GotoLine, buffer);
+        }
         other => submit_prompt_editor(&mut app.buffers[app.active].ed, other, buffer),
     }
 }
@@ -3385,6 +3634,15 @@ fn try_quit(ed: &mut Editor, multi_buffer: bool) {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
+    // Un clic cierra el hover, igual que una tecla: la ventana habla del
+    // lugar donde estaba el cursor, y el clic lo va a mover. La rueda no,
+    // para poder leerlo sin que se vaya.
+    if matches!(app.buffers[app.active].ed.mode, Mode::Hover { .. })
+        && matches!(m.kind, MouseEventKind::Down(_))
+    {
+        app.buffers[app.active].ed.mode = Mode::Editing;
+        app.hover_lines.clear();
+    }
     if !matches!(app.buffers[app.active].ed.mode, Mode::Editing) {
         return;
     }
@@ -3646,6 +3904,40 @@ mod tests_lsp_definicion_y_renombre {
         // `false` y ausente significan que no.
         let b = json!({"capabilities": {"definitionProvider": false}});
         let c = Capacidades::de(&b);
-        assert!(!c.definition && !c.rename);
+        assert!(!c.definition && !c.rename && !c.hover);
+    }
+
+    #[test]
+    fn entiende_las_formas_de_contestar_un_hover() {
+        // MarkupContent, la forma actual (rust-analyzer, pylsp).
+        let r = json!({"contents": {"kind": "markdown", "value": "```rust\nfn main()\n```"}});
+        assert_eq!(contenido_de_hover(&r), Some(("```rust\nfn main()\n```".to_string(), true)));
+        let r = json!({"contents": {"kind": "plaintext", "value": "  int x  "}});
+        assert_eq!(contenido_de_hover(&r), Some(("int x".to_string(), false)));
+
+        // MarkedString suelto: string o bloque de código con su lenguaje.
+        let r = json!({"contents": "**hola**"});
+        assert_eq!(contenido_de_hover(&r), Some(("**hola**".to_string(), true)));
+        let r = json!({"contents": {"language": "python", "value": "def f()"}});
+        assert_eq!(contenido_de_hover(&r), Some(("```python\ndef f()\n```".to_string(), true)));
+
+        // Lista de MarkedString: se juntan como párrafos.
+        let r = json!({"contents": [{"language": "go", "value": "func F()"}, "Hace algo."]});
+        assert_eq!(
+            contenido_de_hover(&r),
+            Some(("```go\nfunc F()\n```\n\nHace algo.".to_string(), true))
+        );
+
+        // Vacío o sin contenido: nada que mostrar.
+        assert_eq!(contenido_de_hover(&json!({"contents": ""})), None);
+        assert_eq!(contenido_de_hover(&json!({"contents": []})), None);
+        assert_eq!(contenido_de_hover(&json!(null)), None);
+    }
+
+    #[test]
+    fn el_texto_plano_del_hover_se_parte_al_ancho() {
+        let lineas = envolver_texto_plano("abcdefghij\ncort", 4);
+        let textos: Vec<String> = lineas.iter().map(|l| l.to_string()).collect();
+        assert_eq!(textos, vec!["abcd", "efgh", "ij", "cort"]);
     }
 }

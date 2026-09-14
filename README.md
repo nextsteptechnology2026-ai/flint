@@ -92,6 +92,8 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 | `Ctrl+D` | Sumar un cursor en la siguiente aparición de lo seleccionado |
 | `Ctrl+T` | Buscador difuso de archivos del proyecto |
 | `Ctrl+N` | Buscar texto en todo el proyecto |
+| `F1` | Tipo y documentación de lo que está bajo el cursor (LSP) |
+| `Alt+←` / `Alt+→` | Volver a donde estabas antes de un salto / avanzar |
 | `Ctrl+K` | Comentar / descomentar las líneas seleccionadas |
 | `Ctrl+U` / `Ctrl+B` | Grabar o terminar una macro / repetirla |
 | `Tab` / `Shift+Tab` | Indentar / des-indentar el bloque seleccionado |
@@ -107,7 +109,7 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 - **Capa modal opcional** (`F2`): modelo selección→acción estilo Kakoune/Helix, con **selección estructural** sobre el árbol de tree-sitter (`n` expande al nodo que contiene la selección, y otra vez sube al padre).
 - **Multi-cursor de verdad**: `Ctrl+D` y `Alt+clic`; escribir, borrar y deshacer actúan sobre todos los cursores a la vez, de forma atómica.
 - **El lenguaje sale del archivo, no solo de la extensión**: un script sin extensión que empieza con `#!/usr/bin/env python3` se resalta como Python.
-- **Resaltado y LSP reales**: tree-sitter para diecisiete lenguajes (Rust, Python, JavaScript, TypeScript, TSX, Go, C, C++, Java, Lua, Shell, HTML, CSS, YAML, JSON, TOML y Markdown, este último con la negrita en negrita y la cursiva en cursiva, no en otro color); cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) — diagnósticos subrayados en el rango exacto, autocompletado que filtra por lo que ya escribiste, ir a la definición (`Ctrl+]` o `F12`) y renombrar un símbolo en todo el proyecto (`F6`). Trae `rust-analyzer` de fábrica y se probó también contra `pylsp`; cualquier otro servidor es un renglón en `[lsp]`, no un cambio de código. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
+- **Resaltado y LSP reales**: tree-sitter para diecisiete lenguajes (Rust, Python, JavaScript, TypeScript, TSX, Go, C, C++, Java, Lua, Shell, HTML, CSS, YAML, JSON, TOML y Markdown, este último con la negrita en negrita y la cursiva en cursiva, no en otro color); cliente LSP propio (JSON-RPC sobre stdio, con sync incremental) — diagnósticos subrayados en el rango exacto, autocompletado que filtra por lo que ya escribiste, hover con el tipo y la documentación formateados (`F1`), ir a la definición (`Ctrl+]` o `F12`) con lista de saltos para volver (`Alt+←`) y renombrar un símbolo en todo el proyecto (`F6`). Trae `rust-analyzer` de fábrica y se probó también contra `pylsp`; cualquier otro servidor es un renglón en `[lsp]`, no un cambio de código. Si falta el servidor, Flint ofrece instalarlo; nunca lo hace en silencio.
 - **Autocompletado en cualquier archivo**: con servidor LSP, sus sugerencias; sin él, las palabras que ya escribiste en el archivo (como `Ctrl+N` en Vim), sin distinguir mayúsculas y ordenadas por cercanía al cursor.
 - **Configurable sin recompilar**: `~/.config/flint/config.toml` decide perfil de teclado, ancho de tabulación, tabuladores o espacios, ajuste de línea, recorte de espacios al guardar y cierre automático de pares — todo eso también **por patrón de archivo** (`[files."*.py"]`), así que Python indenta con espacios y Rust con tabuladores en el mismo editor. Las teclas se redefinen en `[keys]` por el nombre estable de cada acción (`flint --actions` los lista), y los servidores de lenguaje en `[lsp]`, sin tocar el código.
 - **Portapapeles que funciona por SSH**: si no hay servidor gráfico, copiar sale por **OSC 52** hacia la terminal que tenés adelante, en vez de perderse. Configurable (`auto`, `system`, `terminal`, `internal`).
@@ -118,12 +120,12 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 
 ## Estado
 
-Versión 0.3.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
+Versión 0.4.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
 
 - **La primera pasada del resaltado** al abrir un archivo es proporcional a su tamaño (≈1,1 s para 3 MB, sin color mientras tanto). Al editar ya no: el resaltado es incremental y reusa el árbol.
 - **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre y tener atajos propios; todavía no pueden definir un lenguaje nuevo ni reaccionar a eventos como guardar o abrir.
-- **LSP**: diagnósticos, autocompletado, ir a la definición y renombrar. Faltan hover, code actions y formateo.
-- **Tests**: 126, pero el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el LSP de punta a punta todavía se prueban a mano.
+- **LSP**: diagnósticos, autocompletado, hover, ir a la definición y renombrar. Faltan code actions, formateo y ayuda de firmas.
+- **Tests**: 136, pero el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el LSP de punta a punta todavía se prueban a mano.
 
 Afuera a propósito: paneles divididos (las pestañas y tmux cubren el caso) y terminal integrada.
 
