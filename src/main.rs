@@ -3656,31 +3656,51 @@ fn formatear_ahora(app: &mut App, al_guardar: bool) -> Option<String> {
         let ed = &app.buffers[app.active].ed;
         (ed.tab_width, ed.indent_with_spaces)
     };
-    let enviado = app.lsp.as_mut().map(|c| c.request_formatting(&uri, tab, espacios));
-    let id = match enviado {
-        Some(Ok(id)) => id,
-        Some(Err(e)) => return Some(format!("no pude pedirle el formato al servidor: {e}")),
-        None => return None,
-    };
-    let Some(respuesta) = esperar_respuesta(app, id, ESPERA_FORMATO) else {
-        return Some(format!(
+    // Un servidor puede contestar "el contenido cambió" (ContentModified) o
+    // "cancelado" si recibió el texto nuevo justo antes del pedido y todavía
+    // no terminó de procesarlo: rust-analyzer lo hace cuando se guarda dos
+    // veces seguidas con formato. El protocolo dice que el cliente reintente,
+    // así que se reintenta, dentro de la misma espera total.
+    const CONTENIDO_MODIFICADO: i64 = -32801;
+    const PEDIDO_CANCELADO: i64 = -32800;
+    let limite = Instant::now() + ESPERA_FORMATO;
+    let a_tiempo = || {
+        Some(format!(
             "el servidor no formateó en {} s; quedó sin formatear",
             ESPERA_FORMATO.as_secs()
-        ));
+        ))
+    };
+    let respuesta = loop {
+        let enviado = app.lsp.as_mut().map(|c| c.request_formatting(&uri, tab, espacios));
+        let id = match enviado {
+            Some(Ok(id)) => id,
+            Some(Err(e)) => return Some(format!("no pude pedirle el formato al servidor: {e}")),
+            None => return None,
+        };
+        let Some(respuesta) = esperar_respuesta(app, id, limite.saturating_duration_since(Instant::now())) else {
+            return a_tiempo();
+        };
+        let codigo = respuesta.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64);
+        if matches!(codigo, Some(CONTENIDO_MODIFICADO | PEDIDO_CANCELADO)) {
+            if Instant::now() + Duration::from_millis(50) >= limite {
+                return a_tiempo();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        break respuesta;
     };
     if let Some(error) = respuesta.get("error") {
         let mensaje = error.get("message").and_then(Value::as_str).unwrap_or("error desconocido");
         return Some(format!("el servidor no pudo formatear: {mensaje}"));
     }
-    // `null` y una lista vacía no son lo mismo: la lista vacía es "no hay
-    // nada que cambiar", y `null` es lo que contesta rust-analyzer cuando no
-    // pudo correr el formateador (rustfmt sin instalar, por ejemplo). Decir
-    // "ya estaba formateado" en ese caso sería mentir.
+    // `null` no dice por qué: rust-analyzer lo contesta tanto cuando el
+    // archivo ya está formateado como cuando no pudo correr rustfmt (sin
+    // instalar, o un error de sintaxis que rustfmt no sabe leer). No hay
+    // forma de distinguirlos desde acá, así que el mensaje no afirma ninguna
+    // de las dos.
     let Some(ediciones) = respuesta.get("result").and_then(Value::as_array).cloned() else {
-        return Some(
-            "el servidor no devolvió formato (¿falta el formateador? rust-analyzer usa rustfmt)"
-                .to_string(),
-        );
+        return Some("el servidor no propuso cambios".to_string());
     };
     let ed = &mut app.buffers[app.active].ed;
     let antes = ed.rope.clone();

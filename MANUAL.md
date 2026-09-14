@@ -575,11 +575,13 @@ si el servidor tarda más, se guarda igual sin formatear y la barra de estado
 lo dice. Un servidor colgado no te deja sin poder guardar. Mientras espera, lo
 demás que mande el servidor (diagnósticos) se atiende normalmente.
 
-La barra de estado distingue qué pasó: "formateado", "ya estaba formateado",
-el error que devolvió el servidor (una sintaxis rota, por ejemplo), o que no
-devolvió nada. Esto último suele querer decir que falta el formateador:
-rust-analyzer contesta así cuando `rustfmt` no está instalado
-(`rustup component add rustfmt` lo instala).
+La barra de estado dice qué pasó: "formateado", "ya estaba formateado", el
+error que devolvió el servidor, o "el servidor no propuso cambios". Ojo con
+esto último: rust-analyzer contesta igual cuando el archivo ya está bien que
+cuando no pudo correr `rustfmt` —porque no está instalado
+(`rustup component add rustfmt` lo instala) o porque el archivo tiene un error
+de sintaxis—. Si un archivo claramente desprolijo dice eso, es por alguna de
+esas dos.
 
 El ancho de tabulación y si se indenta con espacios se le pasan al servidor
 como preferencia; la configuración del propio proyecto (`rustfmt.toml`,

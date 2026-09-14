@@ -91,16 +91,23 @@ Formatear y formatear al guardar — cerrado el 2026-09-13:
   espera, los otros mensajes del servidor pasan por handle_lsp_message en
   vez de tirarse (esperar_respuesta). Una respuesta que llega tarde
   encuentra su Pending::Format y se ignora.
-- `null` y `[]` se distinguen: `[]` es "ya estaba formateado"; `null` es lo
-  que manda rust-analyzer cuando no pudo correr rustfmt, y decir "ya estaba
-  formateado" ahí sería mentir. Así se descubrió que en esta máquina falta
-  rustfmt (rustup component add rustfmt).
+- `null` no dice por qué: rust-analyzer lo manda tanto si el archivo ya
+  está formateado como si no pudo correr rustfmt (sin instalar, o con un
+  error de sintaxis). La barra dice "el servidor no propuso cambios", sin
+  afirmar ninguna de las dos. Así se descubrió que en esta máquina faltaba
+  rustfmt.
+- ContentModified (-32801) y RequestCancelled (-32800) se reintentan dentro
+  de los mismos 2 s: rust-analyzer los contesta cuando recibe el texto nuevo
+  justo antes del pedido, que es lo que pasa al guardar con formato dos
+  veces seguidas. El protocolo pide que el cliente reintente.
 - Probado a mano en tmux con un servidor LSP de mentira en Python (formatea
   de verdad, y tiene modos lento, error y nulo): formatea y guarda en ~15 ms
   sin perder el diagnóstico que llega mientras espera, Ctrl+Z deshace el
   formato entero, el modo lento guarda sin formatear a los 2 s justos, error
   y nulo guardan y explican, y Alt+Shift+F formatea sin guardar. Contra
-  rust-analyzer real solo se vio el caso nulo, por la falta de rustfmt.
+  rust-analyzer real, con rustfmt instalado: cinco guardados seguidos con
+  código desprolijo, los cinco formateados (182 ms el primero, ~15 ms los
+  demás); antes del reintento, el segundo fallaba con "content modified".
 - Ese servidor de mentira es la base natural para los tests del LSP de
   punta a punta (punto 2).
 
