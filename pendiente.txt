@@ -13,11 +13,19 @@ Chicos:
 Por decidir:
 - Si el CI corre `cargo fmt --check`. Nadie comprobó si el código pasa
   rustfmt; activarlo sin revisar puede obligar a reformatear todo.
+- Paneles divididos adentro de Flint. Hoy no hay, y para ver dos archivos
+  a la vez se usan dos Flint en dos paneles de tmux, que cuesta cero. Dos
+  archivos distintos lado a lado saldrían casi gratis, porque cada buffer
+  ya trae su propio scroll; lo que obliga a la refactorización grande es el
+  mismo archivo en dos paneles: ahí el scroll (row_offset, row_sub_offset,
+  col_offset) tiene que pasar del Editor a una struct de vista, y ui.rs
+  deja de asumir un solo viewport. Es la única refactorización grande que
+  queda. Antecedente: la vista previa de Markdown reemplaza el área de
+  texto en vez de partirla, porque en 80 columnas quedan 38 por lado y no
+  se lee ninguna.
 
 Descartado a propósito (no proponer de nuevo sin un motivo nuevo):
 - Terminal integrada: tmux ya lo resuelve.
-- Paneles divididos: las pestañas y tmux alcanzan. Si algún día se hace,
-  el scroll tiene que pasar del Editor a una struct de vista.
 - Gestor de plugins: no hace falta mientras haya pocos plugins; se copian
   a ~/.config/flint/plugins/.
 - Los ~130 lenguajes de micro: hay 17 con tree-sitter. Agregar uno es una
