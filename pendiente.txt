@@ -14,10 +14,12 @@ Medianos:
    - correr algo ante un evento (guardar, abrir), no solo por comando.
 
 Chicos:
-4. En la próxima release, comprobar que el .deb del runner es idéntico a
-   uno armado con packaging/build-deb.sh dentro de Ubuntu 24.04. En local
-   ya da lo mismo en rutas distintas; entre máquinas falta verlo.
-5. Binario para Linux aarch64. Necesita un runner ARM.
+4. Revisar la próxima release, que es la primera con estos cambios:
+   - que el .deb del runner sea idéntico a uno armado con
+     packaging/build-deb.sh dentro de Ubuntu 24.04 (en local ya da lo
+     mismo en rutas distintas; entre máquinas falta verlo);
+   - que salgan el .deb y el tar.gz de Linux ARM (runner
+     ubuntu-24.04-arm), que no se pudieron probar acá.
 
 Por decidir:
 - Si el CI corre `cargo fmt --check`. Nadie comprobó si el código pasa

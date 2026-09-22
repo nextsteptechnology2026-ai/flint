@@ -37,7 +37,7 @@ Flint no te hace elegir. Arranca en modo directo, sin nada que aprender, y todo 
 
 ## Instalación
 
-**Una línea, sin Rust ni nada instalado** (Linux x86_64 y macOS, Intel o Apple Silicon):
+**Una línea, sin Rust ni nada instalado** (Linux x86_64 o ARM, y macOS, Intel o Apple Silicon; Linux ARM desde la versión siguiente a la 0.5.0):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nextsteptechnology2026-ai/flint/main/packaging/install.sh | sh

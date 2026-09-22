@@ -54,12 +54,6 @@ case "$(uname -m)" in
     *) error "no hay binario para $(uname -m)" ;;
 esac
 
-# Linux ARM todavía no se publica: se avisa en vez de bajar algo que no va a
-# correr.
-if [ "$SO" = linux ] && [ "$ARCH" != x86_64 ]; then
-    error "por ahora solo hay binario de Linux para x86_64; en $ARCH hay que compilar con cargo"
-fi
-
 PLATAFORMA="$ARCH-$SO"
 
 # ---------- qué versión ----------
@@ -100,8 +94,13 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 echo "flint: bajando $NOMBRE…"
-bajar "$BASE/$NOMBRE.tar.gz" "$TMP/$NOMBRE.tar.gz" ||
+if ! bajar "$BASE/$NOMBRE.tar.gz" "$TMP/$NOMBRE.tar.gz"; then
+    # Linux ARM se publica desde después de la 0.5.0.
+    if [ "$PLATAFORMA" = aarch64-linux ]; then
+        error "la $VERSION no tiene binario para Linux ARM; se puede compilar con \"cargo install --git https://github.com/$REPO\""
+    fi
     error "no pude bajar $BASE/$NOMBRE.tar.gz"
+fi
 
 # ---------- verificar ----------
 

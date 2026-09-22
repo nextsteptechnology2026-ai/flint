@@ -50,6 +50,10 @@ jobs:
           - nombre: x86_64-linux
             runner: ubuntu-latest
             deb: true
+          # Runner ARM de GitHub, gratis para repositorios públicos.
+          - nombre: aarch64-linux
+            runner: ubuntu-24.04-arm
+            deb: true
           - nombre: x86_64-macos
             runner: macos-15-intel
             deb: false
@@ -70,9 +74,13 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      # dpkg-shlibdeps calcula las dependencias del paquete. La imagen x86
+      # lo trae; la ARM no está garantizado.
       - name: Construir el .deb
         if: matrix.deb
-        run: bash packaging/build-deb.sh
+        run: |
+          command -v dpkg-shlibdeps >/dev/null || sudo apt-get install -y dpkg-dev
+          bash packaging/build-deb.sh
 
       # El .deb solo sirve en Debian y derivadas; el tar.gz es para todo lo
       # demás (packaging/tarball.sh). Los dos se arman con el mismo entorno
@@ -81,7 +89,7 @@ jobs:
         run: |
           bash packaging/tarball.sh "$VERSION" "${{ matrix.nombre }}"
           if [ "${{ matrix.deb }}" = "true" ]; then
-            cp target/deb/flint_*_amd64.deb dist/
+            cp target/deb/flint_*.deb dist/
           fi
           ls -l dist/
 

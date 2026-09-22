@@ -32,6 +32,7 @@ sha() {
 SHA_MAC_ARM=$(sha aarch64-macos)
 SHA_MAC_X86=$(sha x86_64-macos)
 SHA_LINUX_X86=$(sha x86_64-linux)
+SHA_LINUX_ARM=$(sha aarch64-linux)
 
 cat <<RUBY
 # Fórmula de Homebrew para Flint.
@@ -68,6 +69,10 @@ class Flint < Formula
   end
 
   on_linux do
+    on_arm do
+      url "$BASE/flint-$VERSION-aarch64-linux.tar.gz"
+      sha256 "$SHA_LINUX_ARM"
+    end
     on_intel do
       url "$BASE/flint-$VERSION-x86_64-linux.tar.gz"
       sha256 "$SHA_LINUX_X86"
