@@ -301,6 +301,8 @@ En Python, una línea terminada en `:` también abre bloque. En un lenguaje con 
 
 Los delimitadores que están dentro de una cadena o de un comentario **no cuentan**, igual que en el salto al par: un `"{"` suelto adentro de un texto no sangra la línea siguiente. Es la misma información del árbol de tree-sitter, y es lo que un editor que solo cuenta caracteres no puede distinguir.
 
+Al revés también: si se escribe a mano un `}`, `)` o `]` como primer carácter de una línea sangrada, la línea toma la sangría de la línea donde está su apertura. En Python pasa lo mismo al escribir el `:` de `else`, `elif`, `except` o `finally`: la línea vuelve a la sangría de su `if`, `for`, `while` o `try`. Solo se quita sangría, nunca se agrega, y es un paso de deshacer aparte: `Ctrl+Z` devuelve la sangría y deja lo escrito.
+
 Con varios cursores se mantiene el comportamiento de siempre —cada línea nueva copia la sangría de la suya— porque cada cursor tiene su propio contexto y adivinar uno solo para todos daría un texto que nadie pidió.
 
 ## Macros (`Ctrl+U`, `Ctrl+B`)

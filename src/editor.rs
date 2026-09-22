@@ -1595,6 +1595,13 @@ impl Editor {
     /// tiene su propio contexto (uno puede estar antes de un `)` y otro no)
     /// y adivinar uno solo para todos daría un texto que nadie pidió.
     pub fn insert_char_pairing(&mut self, c: char) {
+        self.insertar_con_par(c);
+        if matches!(c, ')' | ']' | '}' | ':') {
+            self.desindentar_al_cerrar(c);
+        }
+    }
+
+    fn insertar_con_par(&mut self, c: char) {
         if !self.auto_close || !self.secondary.is_empty() || self.selection_anchor.is_some() {
             self.insert_char(c);
             return;
@@ -1657,6 +1664,81 @@ impl Editor {
         self.delete_forward();
         self.backspace();
         true
+    }
+
+    /// Después de escribir `c`: si la línea quedó más sangrada que el bloque
+    /// al que pertenece, se le quita lo que sobra. Pasa con un cierre que es
+    /// lo primero de su línea (toma la sangría de la línea de su apertura) y,
+    /// en Python, con el `:` de `else`, `elif`, `except` y `finally` (toma la
+    /// de su `if` o `try`). Solo quita sangría, nunca agrega: si el usuario
+    /// la dejó más a la izquierda, sabrá por qué. Es un paso de deshacer
+    /// aparte, así que Ctrl+Z devuelve la sangría y deja lo escrito.
+    fn desindentar_al_cerrar(&mut self, c: char) {
+        if !self.secondary.is_empty() || self.selection_anchor.is_some() || self.cursor.col == 0 {
+            return;
+        }
+        let linea = self.cursor.line;
+        let antes: String = self.rope.line(linea).chars().take(self.cursor.col).collect();
+        let objetivo = if c == ':' {
+            if !self.indent_after_colon {
+                return;
+            }
+            match self.sangria_de_bloque_python(linea, antes.trim()) {
+                Some(s) => s,
+                None => return,
+            }
+        } else {
+            if antes.trim_start() != c.to_string() {
+                return;
+            }
+            let cierre = Position { line: linea, col: self.cursor.col - 1 };
+            match self.matching_bracket(cierre) {
+                Some(par) if par.line < linea => Self::leading_whitespace(&self.rope, par.line),
+                _ => return,
+            }
+        };
+        let actual = Self::leading_whitespace(&self.rope, linea);
+        let (n_actual, n_objetivo) = (actual.chars().count(), objetivo.chars().count());
+        if n_objetivo >= n_actual {
+            return;
+        }
+        let col = self.cursor.col - n_actual + n_objetivo;
+        self.replace_ranges(&[(
+            Position { line: linea, col: 0 },
+            Position { line: linea, col: n_actual },
+            objetivo,
+        )]);
+        self.cursor = Position { line: linea, col };
+    }
+
+    /// La sangría del bloque al que pertenece una línea de Python que empieza
+    /// con `else`, `elif`, `except` o `finally` y termina en `:`: la de la
+    /// primera línea de arriba con menos sangría, si esa línea abre un bloque
+    /// que admite esta continuación. Si no la admite, `None`: mejor no tocar
+    /// nada que adivinar.
+    fn sangria_de_bloque_python(&self, linea: usize, texto: &str) -> Option<String> {
+        if !texto.ends_with(':') {
+            return None;
+        }
+        let palabra = |t: &str| -> String { t.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect() };
+        let admitidos: &[&str] = match palabra(texto).as_str() {
+            "else" => &["if", "elif", "for", "while", "try", "except"],
+            "elif" => &["if", "elif"],
+            "except" => &["try", "except"],
+            "finally" => &["try", "except", "else"],
+            _ => return None,
+        };
+        let propia = Self::leading_whitespace(&self.rope, linea).chars().count();
+        for arriba in (0..linea).rev() {
+            let sangria = Self::leading_whitespace(&self.rope, arriba);
+            let resto: String = self.rope.line(arriba).chars().skip(sangria.chars().count()).collect();
+            let resto = resto.trim_end();
+            if resto.is_empty() || resto.starts_with('#') || sangria.chars().count() >= propia {
+                continue;
+            }
+            return admitidos.contains(&palabra(resto).as_str()).then_some(sangria);
+        }
+        None
     }
 
     /// La posición del paréntesis, corchete o llave que hace pareja con el
@@ -2671,6 +2753,108 @@ mod tests {
         e.cursor = Position { line: 0, col: 5 };
         e.insert_newline();
         assert_eq!(e.rope.to_string(), "f(x);\n\n");
+    }
+
+    /// Escribe `texto` letra por letra, como el usuario.
+    fn tipear(e: &mut Editor, texto: &str) {
+        for c in texto.chars() {
+            e.insert_char_pairing(c);
+        }
+    }
+
+    #[test]
+    fn el_cierre_escrito_a_mano_vuelve_a_la_sangria_de_su_apertura() {
+        let mut e = ed("fn f() {\n    x();\n    \n");
+        e.auto_close = false;
+        e.cursor = Position { line: 2, col: 4 };
+        tipear(&mut e, "}");
+        assert_eq!(e.rope.to_string(), "fn f() {\n    x();\n}\n");
+        assert_eq!(e.cursor, Position { line: 2, col: 1 });
+
+        // Anidado: toma la sangría de *su* apertura, no la del principio.
+        let mut e = ed("a {\n    b {\n        c\n        \n");
+        e.auto_close = false;
+        e.cursor = Position { line: 3, col: 8 };
+        tipear(&mut e, "}");
+        assert_eq!(e.rope.to_string(), "a {\n    b {\n        c\n    }\n");
+
+        // Paréntesis y corchetes también.
+        let mut e = ed("f(\n    1,\n    \n");
+        e.auto_close = false;
+        e.cursor = Position { line: 2, col: 4 };
+        tipear(&mut e, ")");
+        assert_eq!(e.rope.to_string(), "f(\n    1,\n)\n");
+    }
+
+    #[test]
+    fn el_cierre_no_toca_la_sangria_cuando_no_corresponde() {
+        // Con texto antes del cierre en la misma línea.
+        let mut e = ed("f {\n    x \n");
+        e.auto_close = false;
+        e.cursor = Position { line: 1, col: 6 };
+        tipear(&mut e, "}");
+        assert_eq!(e.rope.to_string(), "f {\n    x }\n");
+
+        // Sin apertura que le haga pareja.
+        let mut e = ed("x\n    \n");
+        e.cursor = Position { line: 1, col: 4 };
+        tipear(&mut e, "}");
+        assert_eq!(e.rope.to_string(), "x\n    }\n");
+
+        // Ya estaba menos sangrado que la apertura: no se agrega sangría.
+        let mut e = ed("    f {\n  \n");
+        e.auto_close = false;
+        e.cursor = Position { line: 1, col: 2 };
+        tipear(&mut e, "}");
+        assert_eq!(e.rope.to_string(), "    f {\n  }\n");
+    }
+
+    #[test]
+    fn deshacer_devuelve_la_sangria_y_deja_el_cierre() {
+        let mut e = ed("f {\n    \n");
+        e.auto_close = false;
+        e.cursor = Position { line: 1, col: 4 };
+        tipear(&mut e, "}");
+        assert_eq!(e.rope.to_string(), "f {\n}\n");
+        e.undo();
+        assert_eq!(e.rope.to_string(), "f {\n    }\n");
+    }
+
+    #[test]
+    fn en_python_else_elif_except_y_finally_vuelven_a_su_bloque() {
+        let py = |texto: &str, linea: usize, col: usize, tipeo: &str| {
+            let mut e = ed(texto);
+            e.indent_after_colon = true;
+            e.auto_close = false;
+            e.cursor = Position { line: linea, col };
+            tipear(&mut e, tipeo);
+            e.rope.to_string()
+        };
+        assert_eq!(py("if a:\n    x\n    \n", 2, 4, "else:"), "if a:\n    x\nelse:\n");
+        assert_eq!(py("if a:\n    x\n    \n", 2, 4, "elif b:"), "if a:\n    x\nelif b:\n");
+        assert_eq!(
+            py("try:\n    x\n\n    # nota\n    \n", 4, 4, "except ValueError as e:"),
+            "try:\n    x\n\n    # nota\nexcept ValueError as e:\n"
+        );
+        assert_eq!(py("try:\n    x\nexcept:\n    y\n    \n", 4, 4, "finally:"), "try:\n    x\nexcept:\n    y\nfinally:\n");
+        // Anidado: vuelve al `if` de adentro, no al de afuera.
+        assert_eq!(
+            py("if a:\n    if b:\n        x\n        \n", 3, 8, "else:"),
+            "if a:\n    if b:\n        x\n    else:\n"
+        );
+        // El bloque de arriba no admite un else: no se toca.
+        assert_eq!(py("def f():\n    x\n    \n", 2, 4, "else:"), "def f():\n    x\n    else:\n");
+        // Otras palabras no des-indentan.
+        assert_eq!(py("if a:\n    x\n    \n", 2, 4, "elsewhere:"), "if a:\n    x\n    elsewhere:\n");
+    }
+
+    #[test]
+    fn fuera_de_python_los_dos_puntos_no_desindentan() {
+        let mut e = ed("if a {\n    x\n    \n");
+        e.auto_close = false;
+        e.cursor = Position { line: 2, col: 4 };
+        tipear(&mut e, "else:");
+        assert_eq!(e.rope.to_string(), "if a {\n    x\n    else:\n");
     }
 
     #[test]
