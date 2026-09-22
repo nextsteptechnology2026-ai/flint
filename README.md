@@ -37,7 +37,7 @@ Flint no te hace elegir. Arranca en modo directo, sin nada que aprender, y todo 
 
 ## Instalación
 
-**Una línea, sin Rust ni nada instalado** (Linux x86_64 o ARM, y macOS, Intel o Apple Silicon; Linux ARM desde la versión siguiente a la 0.5.0):
+**Una línea, sin Rust ni nada instalado** (Linux x86_64 o ARM, y macOS, Intel o Apple Silicon; Linux ARM desde la 0.6.0):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nextsteptechnology2026-ai/flint/main/packaging/install.sh | sh
@@ -123,7 +123,7 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 
 ## Estado
 
-Versión 0.5.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
+Versión 0.6.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
 
 - **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre, tener atajos propios, reaccionar al abrir y al guardar (antes y después) y traer lenguajes nuevos con su gramática de tree-sitter compilada.
 - **LSP**: diagnósticos, autocompletado, hover, ayuda de firmas, formateo, ir a la definición y renombrar. Faltan code actions.

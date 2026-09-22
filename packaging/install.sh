@@ -95,7 +95,7 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 
 echo "flint: bajando $NOMBRE…"
 if ! bajar "$BASE/$NOMBRE.tar.gz" "$TMP/$NOMBRE.tar.gz"; then
-    # Linux ARM se publica desde después de la 0.5.0.
+    # Linux ARM se publica desde la 0.6.0.
     if [ "$PLATAFORMA" = aarch64-linux ]; then
         error "la $VERSION no tiene binario para Linux ARM; se puede compilar con \"cargo install --git https://github.com/$REPO\""
     fi
