@@ -61,6 +61,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # La versión de rust-toolchain.toml, la misma en las tres plataformas.
+      - name: Toolchain
+        run: rustup toolchain install
+
       # No se publica algo que no pasa sus propias pruebas, y se prueban en
       # cada plataforma: las gramáticas de tree-sitter son C compilado acá.
       - name: Tests
@@ -71,19 +75,11 @@ jobs:
         run: bash packaging/build-deb.sh
 
       # El .deb solo sirve en Debian y derivadas; el tar.gz es para todo lo
-      # demás. Lleva la documentación y el tema de ejemplo para que sea
-      # autocontenido, igual que el paquete.
+      # demás (packaging/tarball.sh). Los dos se arman con el mismo entorno
+      # reproducible (packaging/reproducible.sh).
       - name: Empaquetar el binario suelto
         run: |
-          cargo build --release --locked
-          dir="flint-${VERSION}-${{ matrix.nombre }}"
-          mkdir -p "dist/$dir"
-          cp target/release/flint "dist/$dir/"
-          strip "dist/$dir/flint"
-          cp README.md MANUAL.md LICENSE theme.example.toml config.example.toml "dist/$dir/"
-          cp -a plugins "dist/$dir/"
-          tar -czf "dist/$dir.tar.gz" -C dist "$dir"
-          rm -rf "dist/$dir"
+          bash packaging/tarball.sh "$VERSION" "${{ matrix.nombre }}"
           if [ "${{ matrix.deb }}" = "true" ]; then
             cp target/deb/flint_*_amd64.deb dist/
           fi

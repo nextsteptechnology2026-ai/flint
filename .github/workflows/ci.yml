@@ -26,9 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # La versión sale de rust-toolchain.toml. Se instala explícitamente:
+      # que cargo la instale solo la primera vez está en vías de desaparecer.
       - name: Versión del toolchain
         run: |
-          rustup component add clippy
+          rustup toolchain install
           rustc --version
           cargo --version
 

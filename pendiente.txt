@@ -17,9 +17,9 @@ Chicos:
 4. Ayuda de firmas (signatureHelp) mientras se escribe una llamada. Puede
    reusar la ventana del hover.
 5. Búsqueda en el proyecto: falta regex y reemplazar en todos los archivos.
-6. Compilación reproducible: el mismo código da un .deb distinto en local
-   y en GitHub. Se arregla con SOURCE_DATE_EPOCH, --remap-path-prefix y un
-   rust-toolchain.toml.
+6. En la próxima release, comprobar que el .deb del runner es idéntico a
+   uno armado con packaging/build-deb.sh dentro de Ubuntu 24.04. En local
+   ya da lo mismo en rutas distintas; entre máquinas falta verlo.
 7. Binario para Linux aarch64. Necesita un runner ARM.
 
 Por decidir:

@@ -7,6 +7,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source packaging/reproducible.sh
 
 PKG_NAME="flint"
 VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
@@ -15,7 +16,7 @@ OUT_DIR="$ROOT_DIR/target/deb"
 PKG_DIR="$OUT_DIR/${PKG_NAME}_${VERSION}_${ARCH}"
 
 echo "==> Compilando en modo release…"
-cargo build --release
+cargo build --release --locked
 
 echo "==> Armando el árbol del paquete…"
 rm -rf "$PKG_DIR"
@@ -25,11 +26,14 @@ mkdir -p \
     "$PKG_DIR/usr/share/doc/flint" \
     "$PKG_DIR/usr/share/flint/plugins"
 
-install -m 755 target/release/flint "$PKG_DIR/usr/bin/flint"
+install -m 755 "$CARGO_TARGET_DIR/release/flint" "$PKG_DIR/usr/bin/flint"
 strip --strip-unneeded "$PKG_DIR/usr/bin/flint"
 
 install -m 644 README.md MANUAL.md theme.example.toml config.example.toml "$PKG_DIR/usr/share/doc/flint/"
 cp -a plugins/. "$PKG_DIR/usr/share/flint/plugins/"
+# Los permisos no pueden depender del umask de quien hizo el checkout.
+find "$PKG_DIR" -type d -exec chmod 755 {} +
+find "$PKG_DIR/usr/share" -type f -exec chmod 644 {} +
 
 # Dependencias reales del binario (libc/libgcc, ninguna más — arboard habla
 # X11 por protocolo puro, sin libX11.so de por medio), calculadas del ELF con

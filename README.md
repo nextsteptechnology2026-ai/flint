@@ -61,6 +61,8 @@ bash packaging/build-deb.sh                       # compila y arma el paquete
 sudo apt install ./target/deb/flint_*_amd64.deb
 ```
 
+El paquete y los `.tar.gz` son reproducibles: el mismo commit da los mismos bytes en cualquier ruta y en cualquier fecha. La versión de Rust está fijada en `rust-toolchain.toml`, las rutas de la máquina no quedan dentro del binario, y las fechas de los archivos son la del commit (ver `packaging/reproducible.sh`). Para obtener exactamente el binario publicado hay que compilar además con el mismo enlazador que el runner, o sea dentro de Ubuntu 24.04.
+
 Si `apt` responde `fichero no admitido` o `unsupported file`, no es el paquete: `apt` baja privilegios al usuario `_apt`, que no puede entrar a un directorio personal en modo `700`. Se arregla instalando desde una ruta que ese usuario pueda leer (`/tmp`, por ejemplo) o con `sudo dpkg -i`, que no baja privilegios.
 
 **Desde el código** (necesita Rust ≥ 1.85, por la edición 2024):

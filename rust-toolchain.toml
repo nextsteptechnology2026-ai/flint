@@ -1,0 +1,10 @@
+# La versión exacta de Rust con la que se compila Flint. Fijarla es parte de
+# que la compilación sea reproducible: otro compilador da otro binario.
+# rustup la instala sola la primera vez que se corre cargo en el repo.
+[toolchain]
+channel = "1.98.0"
+# rust-analyzer y rustfmt no son para compilar: sin ellos, dentro del repo
+# el rust-analyzer de rustup es el de esta versión y no está instalado, y
+# editar Flint con Flint se queda sin LSP ni formato.
+components = ["clippy", "rust-analyzer", "rustfmt"]
+profile = "minimal"
