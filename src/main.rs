@@ -1125,12 +1125,15 @@ fn apply_completion(
             .cloned()
             .or_else(|| r.get("items").and_then(Value::as_array).cloned())
     });
-    let items: Vec<editor::CompletionEntry> = items_val
+    let mut items: Vec<editor::CompletionEntry> = items_val
         .unwrap_or_default()
         .iter()
         .filter_map(completion_entry_from)
         .take(50)
         .collect();
+    for it in &mut items {
+        it.reemplazo = it.lsp_range.and_then(|r| reemplazo_de(&target.ed, trigger, &prefix, r));
+    }
 
     if items.is_empty() {
         // El servidor no tenía nada que ofrecer acá: mejor las palabras del
@@ -3222,7 +3225,7 @@ fn complete_from_buffer_in(ed: &mut Editor) {
     ed.mode = Mode::Completion {
         items: words
             .into_iter()
-            .map(|label| editor::CompletionEntry { label, detail: None, insert_text: None })
+            .map(|label| editor::CompletionEntry { label, ..Default::default() })
             .collect(),
         selected: 0,
         trigger,
@@ -3276,9 +3279,15 @@ fn completion_entry_from(it: &Value) -> Option<editor::CompletionEntry> {
         return Some(editor::CompletionEntry {
             label,
             detail,
-            insert_text: None,
+            ..Default::default()
         });
     }
+    // `insert` es la forma de InsertReplaceEdit; Flint no la anuncia, pero
+    // si un servidor la manda igual, se usa el rango de insertar, que es el
+    // que no pisa lo que hay después del cursor.
+    let lsp_range = it.get("textEdit").and_then(|e| e.get("range").or_else(|| e.get("insert"))).and_then(|r| {
+        Some((pos_lsp(r.get("start")?)?, pos_lsp(r.get("end")?)?))
+    });
     let insert_text = it
         .get("textEdit")
         .and_then(|e| e.get("newText"))
@@ -3289,7 +3298,39 @@ fn completion_entry_from(it: &Value) -> Option<editor::CompletionEntry> {
         label,
         detail,
         insert_text,
+        lsp_range,
+        reemplazo: None,
     })
+}
+
+/// Pasa el rango de `textEdit` de una entrada a columnas en caracteres
+/// (`CompletionEntry::reemplazo`). `trigger` y `prefix` son los del pedido:
+/// el cursor estaba en `trigger.col + largo de prefix`.
+///
+/// El texto pudo cambiar entre el pedido y la respuesta, pero solo con lo
+/// que se escribió en el cursor: lo anterior al cursor del pedido sigue
+/// igual (así se convierte el inicio), y lo que el rango abarcaba después
+/// de ese cursor ahora está después del cursor actual (así se cuenta el
+/// fin). Un rango en otra línea no respeta el spec y se ignora.
+fn reemplazo_de(ed: &Editor, trigger: (usize, usize), prefix: &str, rango: ((usize, usize), (usize, usize))) -> Option<(usize, usize)> {
+    let ((l0, c0), (l1, c1)) = rango;
+    if l0 != trigger.0 || l1 != trigger.0 {
+        return None;
+    }
+    let col_pedido = trigger.1 + prefix.chars().count();
+    let desde = ed.utf16_col_to_char(l0, c0).min(col_pedido);
+    let pedido16 = ed.char_col_to_utf16(l0, col_pedido);
+    let mut resto16 = c1.saturating_sub(pedido16);
+    let col_cursor = if ed.cursor.line == l0 { ed.cursor.col } else { col_pedido };
+    let mut despues = 0;
+    for c in ed.rope.line(l0).chars().skip(col_cursor) {
+        if resto16 == 0 || c == '\n' {
+            break;
+        }
+        resto16 = resto16.saturating_sub(c.len_utf16());
+        despues += 1;
+    }
+    Some((desde, despues))
 }
 
 fn filtered_completion_indices(items: &[editor::CompletionEntry], prefix: &str) -> Vec<usize> {
@@ -3300,6 +3341,25 @@ fn filtered_completion_indices(items: &[editor::CompletionEntry], prefix: &str) 
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, i)| i).collect()
+}
+
+/// Reemplaza lo tipeado por el texto de `entry`: desde `trigger` (o desde
+/// donde empiece el rango del servidor, si mandó uno) hasta el cursor, más
+/// lo que ese rango abarque después del cursor.
+fn aceptar_sugerencia(ed: &mut Editor, entry: &editor::CompletionEntry, trigger: editor::Position) {
+    let text = entry.insert_text.clone().unwrap_or_else(|| entry.label.clone());
+    let (desde, despues) = entry.reemplazo.unwrap_or((trigger.col, 0));
+    ed.selection_anchor = Some(editor::Position { line: trigger.line, col: desde });
+    ed.cursor = ed.clamp_position(editor::Position {
+        line: ed.cursor.line,
+        col: ed.cursor.col + despues,
+    });
+    ed.secondary.clear();
+    ed.delete_selection_action();
+    for c in text.chars() {
+        ed.insert_char(c);
+    }
+    ed.status = format!("Insertado: {}", entry.label);
 }
 
 /// El popup de autocompletado sigue filtrando mientras se escribe (como la
@@ -3341,17 +3401,7 @@ fn handle_completion_key(app: &mut App, key: KeyEvent) {
                 app.buffers[app.active].ed.mode = Mode::Completion { items, selected, trigger, prefix };
                 return;
             };
-            let entry = &items[idx];
-            let text = entry.insert_text.clone().unwrap_or_else(|| entry.label.clone());
-            let label = entry.label.clone();
-            let ed = &mut app.buffers[app.active].ed;
-            ed.selection_anchor = Some(trigger);
-            ed.secondary.clear();
-            ed.delete_selection_action();
-            for c in text.chars() {
-                ed.insert_char(c);
-            }
-            ed.status = format!("Insertado: {label}");
+            aceptar_sugerencia(&mut app.buffers[app.active].ed, &items[idx], trigger);
             return;
         }
         KeyCode::Backspace => {
@@ -3888,6 +3938,73 @@ mod tests {
 
         // Sin label no hay entrada posible.
         assert!(completion_entry_from(&json!({ "detail": "x" })).is_none());
+    }
+
+    /// Acepta la primera entrada de `respuesta` en `texto`, con el cursor en
+    /// `col` de la primera línea, como si se hubiera pedido ahí.
+    fn aceptar_en(texto: &str, col: usize, respuesta: Value) -> String {
+        let mut ed = Editor::open(None).expect("editor vacío");
+        ed.rope = ropey::Rope::from_str(texto);
+        ed.cursor = editor::Position { line: 0, col };
+        let (trigger, prefix) = ed.identifier_prefix_before_cursor();
+        let mut entry = completion_entry_from(&respuesta).unwrap();
+        entry.reemplazo = entry
+            .lsp_range
+            .and_then(|r| reemplazo_de(&ed, (trigger.line, trigger.col), &prefix, r));
+        aceptar_sugerencia(&mut ed, &entry, trigger);
+        ed.rope.to_string()
+    }
+
+    fn con_rango(inicio: usize, fin: usize, nuevo: &str) -> Value {
+        json!({
+            "label": nuevo,
+            "textEdit": {
+                "range": {"start": {"line": 0, "character": inicio}, "end": {"line": 0, "character": fin}},
+                "newText": nuevo
+            }
+        })
+    }
+
+    #[test]
+    fn el_rango_de_textedit_decide_que_se_reemplaza() {
+        // Rango que empieza antes de la palabra: el servidor reemplaza
+        // `std::` entero, no solo `fo`.
+        assert_eq!(aceptar_en("use std::fo;", 11, con_rango(4, 11, "std::fmt")), "use std::fmt;");
+        // Rango que sigue después del cursor: se come el resto de la palabra.
+        assert_eq!(aceptar_en("x.pu_old()", 4, con_rango(2, 8, "push")), "x.push()");
+        // Rango que coincide con la palabra: igual que sin rango.
+        assert_eq!(aceptar_en("let v = ve", 10, con_rango(8, 10, "vec!")), "let v = vec!");
+        // Sin rango, lo de siempre: desde el comienzo de la palabra.
+        assert_eq!(aceptar_en("let v = ve", 10, json!({"label": "vec"})), "let v = vec");
+        // Un rango en otra línea no respeta el spec: se ignora.
+        let otra_linea = json!({
+            "label": "vec",
+            "textEdit": {"range": {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 2}}, "newText": "vec"}
+        });
+        assert_eq!(aceptar_en("let v = ve", 10, otra_linea), "let v = vec");
+    }
+
+    #[test]
+    fn el_rango_de_textedit_se_mide_en_utf16() {
+        // El emoji es un carácter pero dos unidades UTF-16: el 3..7 del
+        // servidor es "abcd", no " abc" como sería contando caracteres.
+        assert_eq!(aceptar_en("😀 abcd", 5, con_rango(3, 7, "xy")), "😀 xy");
+    }
+
+    #[test]
+    fn lo_escrito_mientras_llegaba_la_respuesta_tambien_se_reemplaza() {
+        let mut ed = Editor::open(None).expect("editor vacío");
+        ed.rope = ropey::Rope::from_str("a.pu();");
+        ed.cursor = editor::Position { line: 0, col: 4 };
+        let (trigger, prefix) = ed.identifier_prefix_before_cursor();
+        // Se pide en "pu|", y antes de que llegue la respuesta se escribe "s".
+        ed.insert_char('s');
+        let mut entry = completion_entry_from(&con_rango(2, 4, "push")).unwrap();
+        entry.reemplazo = entry
+            .lsp_range
+            .and_then(|r| reemplazo_de(&ed, (trigger.line, trigger.col), &prefix, r));
+        aceptar_sugerencia(&mut ed, &entry, trigger);
+        assert_eq!(ed.rope.to_string(), "a.push();");
     }
 }
 

@@ -132,7 +132,7 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct CompletionEntry {
     pub label: String,
     pub detail: Option<String>,
@@ -140,6 +140,15 @@ pub struct CompletionEntry {
     /// no es un snippet (`$0`, `${1:nombre}`...) — Flint no expande snippets
     /// todavía, así que en ese caso se usa `label` en cambio.
     pub insert_text: Option<String>,
+    /// El rango de `textEdit` tal como lo manda el servidor: (línea,
+    /// columna UTF-16) de inicio y de fin, medido sobre el texto del momento
+    /// en que se pidió el autocompletado.
+    pub lsp_range: Option<((usize, usize), (usize, usize))>,
+    /// Ese mismo rango pasado a lo que Flint necesita al aceptar: la columna
+    /// (en caracteres) desde la que se borra, y cuántos caracteres después
+    /// del cursor se borran también. `None` = lo de siempre: desde el
+    /// comienzo de la palabra hasta el cursor.
+    pub reemplazo: Option<(usize, usize)>,
 }
 
 /// La capa opcional de edición modal (selección→acción, estilo Kakoune/Helix),
@@ -1300,7 +1309,7 @@ impl Editor {
         self.last_edit_at = Some(now);
     }
 
-    fn clamp_position(&self, pos: Position) -> Position {
+    pub fn clamp_position(&self, pos: Position) -> Position {
         let max_line = self.line_count().saturating_sub(1);
         let line = pos.line.min(max_line);
         let col = pos.col.min(self.line_char_len(line));

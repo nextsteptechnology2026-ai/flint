@@ -1190,7 +1190,7 @@ mod tests {
                 items: vec![CompletionEntry {
                     label: "una_sugerencia_larguisima".to_string(),
                     detail: Some("fn(x: usize) -> usize".to_string()),
-                    insert_text: None,
+                    ..Default::default()
                 }],
                 selected: 0,
                 trigger: Position { line: 0, col: 0 },

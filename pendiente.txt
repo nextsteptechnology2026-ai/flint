@@ -16,15 +16,13 @@ Medianos:
 Chicos:
 4. Al escribir una llave de cierre en una línea sangrada, no se quita un
    nivel de sangría. Lo mismo con `else` y `elif` en Python.
-5. El autocompletado usa solo textEdit.newText e ignora su rango. Falla
-   con servidores que piden reemplazar texto más atrás del cursor.
-6. Ayuda de firmas (signatureHelp) mientras se escribe una llamada. Puede
+5. Ayuda de firmas (signatureHelp) mientras se escribe una llamada. Puede
    reusar la ventana del hover.
-7. Búsqueda en el proyecto: falta regex y reemplazar en todos los archivos.
-8. Compilación reproducible: el mismo código da un .deb distinto en local
+6. Búsqueda en el proyecto: falta regex y reemplazar en todos los archivos.
+7. Compilación reproducible: el mismo código da un .deb distinto en local
    y en GitHub. Se arregla con SOURCE_DATE_EPOCH, --remap-path-prefix y un
    rust-toolchain.toml.
-9. Binario para Linux aarch64. Necesita un runner ARM.
+8. Binario para Linux aarch64. Necesita un runner ARM.
 
 Por decidir:
 - Si el CI corre `cargo fmt --check`. Nadie comprobó si el código pasa
