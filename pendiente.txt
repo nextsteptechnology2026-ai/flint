@@ -3,9 +3,7 @@ Pendientes de Flint
 Lo terminado no se anota acá: está en el historial de git.
 
 Medianos:
-1. API de plugins. Falta:
-   - definir un lenguaje nuevo con su resaltado;
-   - correr algo ante un evento (guardar, abrir), no solo por comando.
+1. API de plugins: definir un lenguaje nuevo con su resaltado.
 
 Chicos:
 2. Revisar la próxima release, que es la primera con estos cambios:

@@ -279,6 +279,10 @@ pub struct Editor {
     pub row_sub_offset: usize,
     pub col_offset: usize,
     pub dirty: bool,
+    /// Se guardó y todavía no se avisó a los plugins. Lo marca `save`, que es
+    /// por donde pasan todos los caminos de guardar (Ctrl+S, confirmar que
+    /// se pisa el disco, "Guardar como"), y lo levanta el bucle principal.
+    pub recien_guardado: bool,
     pub status: String,
     pub mode: Mode,
     pub last_search: Option<String>,
@@ -446,6 +450,7 @@ impl Editor {
             row_sub_offset: 0,
             col_offset: 0,
             dirty: false,
+            recien_guardado: false,
             status,
             mode: Mode::Editing,
             last_search: None,
@@ -650,6 +655,7 @@ impl Editor {
         // fecha de referencia se corre y el respaldo deja de hacer falta.
         self.disk_mtime = mtime_de(&path);
         self.discard_backup();
+        self.recien_guardado = true;
         Ok(())
     }
 

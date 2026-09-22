@@ -125,7 +125,7 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 
 Versión 0.5.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por qué— está en **[pendiente.txt](pendiente.txt)**, verificado contra el código. Lo principal:
 
-- **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre y tener atajos propios; todavía no pueden definir un lenguaje nuevo ni reaccionar a eventos como guardar o abrir.
+- **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre, tener atajos propios y reaccionar al abrir y al guardar (antes y después); todavía no pueden definir un lenguaje nuevo.
 - **LSP**: diagnósticos, autocompletado, hover, ayuda de firmas, formateo, ir a la definición y renombrar. Faltan code actions.
 - **Tests**: 167, incluido el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar). El cliente LSP de punta a punta todavía se prueba a mano.
 

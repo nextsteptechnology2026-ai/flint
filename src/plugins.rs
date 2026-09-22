@@ -25,10 +25,43 @@ pub struct PluginBind {
     pub modal: bool,
 }
 
+/// Los momentos en que Flint avisa a los plugins, además de cuando el
+/// usuario invoca un comando suyo.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Evento {
+    /// Se abrió un archivo (también el primero, al arrancar).
+    Abrir,
+    /// Se va a guardar. Lo que pida el manejador se aplica antes de
+    /// escribir, así que puede cambiar lo que se guarda.
+    AntesDeGuardar,
+    /// Se guardó.
+    Guardar,
+}
+
+impl Evento {
+    fn de_nombre(nombre: &str) -> Option<Evento> {
+        match nombre {
+            "open" => Some(Evento::Abrir),
+            "before_save" => Some(Evento::AntesDeGuardar),
+            "save" => Some(Evento::Guardar),
+            _ => None,
+        }
+    }
+
+    pub fn nombre(self) -> &'static str {
+        match self {
+            Evento::Abrir => "open",
+            Evento::AntesDeGuardar => "before_save",
+            Evento::Guardar => "save",
+        }
+    }
+}
+
 /// Lo que un comando de plugin ve del editor cuando se lo invoca. Es una
 /// foto, no una referencia viva: el script corre con el buffer quieto y lo
 /// que pida cambiar sale como `PluginEffect`, que Flint aplica después. Así
 /// un plugin no puede dejar el editor a medio camino si falla en el medio.
+#[derive(Clone)]
 pub struct PluginContext {
     pub filename: String,
     /// El identificador del lenguaje (`rust`, `python`…), vacío si no hay.
@@ -75,6 +108,9 @@ pub struct PluginBridge {
     lua: Lua,
     efectos: Rc<RefCell<Vec<PluginEffect>>>,
     ctx: Rc<RefCell<PluginContext>>,
+    /// Las funciones que los scripts ataron a cada evento, en el orden en
+    /// que se cargaron.
+    manejadores: Rc<RefCell<Vec<(Evento, RegistryKey)>>>,
 }
 
 impl Default for PluginContext {
@@ -130,9 +166,10 @@ impl PluginBridge {
         let registered: Rc<RefCell<Vec<(String, String, RegistryKey)>>> =
             Rc::new(RefCell::new(Vec::new()));
         let binds: Rc<RefCell<Vec<PluginBind>>> = Rc::new(RefCell::new(Vec::new()));
+        let manejadores: Rc<RefCell<Vec<(Evento, RegistryKey)>>> = Rc::new(RefCell::new(Vec::new()));
 
         let mut errors = Vec::new();
-        if let Err(e) = install_api(&lua, &registered, &binds, &efectos, &ctx) {
+        if let Err(e) = install_api(&lua, &registered, &binds, &manejadores, &efectos, &ctx) {
             errors.push(format!("No se pudo preparar la API de plugins: {e}"));
         }
 
@@ -188,7 +225,7 @@ impl PluginBridge {
         let binds = std::mem::take(&mut *binds.borrow_mut());
 
         PluginLoad {
-            bridge: PluginBridge { lua, efectos, ctx },
+            bridge: PluginBridge { lua, efectos, ctx, manejadores },
             commands,
             binds,
             errors,
@@ -218,11 +255,44 @@ impl PluginBridge {
     }
 }
 
+impl PluginBridge {
+    /// Si algún script espera este evento. Armar la foto del editor copia el
+    /// texto entero, así que sin nadie esperando no se arma.
+    pub fn escucha(&self, evento: Evento) -> bool {
+        self.manejadores.borrow().iter().any(|(e, _)| *e == evento)
+    }
+
+    /// Corre todos los manejadores de `evento`, en orden y todos con la
+    /// misma foto del editor. Devuelve lo que pidieron, en orden, y los
+    /// errores. Si un manejador falla, se descarta lo suyo y los demás
+    /// corren igual: un plugin roto no tiene por qué frenar a los otros.
+    pub fn emitir(&self, evento: Evento, ctx: PluginContext) -> (Vec<PluginEffect>, Vec<String>) {
+        let mut todos = Vec::new();
+        let mut errores = Vec::new();
+        let manejadores = self.manejadores.borrow();
+        for (_, key) in manejadores.iter().filter(|(e, _)| *e == evento) {
+            *self.ctx.borrow_mut() = ctx.clone();
+            self.efectos.borrow_mut().clear();
+            let resultado = self
+                .lua
+                .registry_value::<Function>(key)
+                .and_then(|f| f.call::<()>(()));
+            let efectos: Vec<PluginEffect> = self.efectos.borrow_mut().drain(..).collect();
+            match resultado {
+                Ok(()) => todos.extend(efectos),
+                Err(e) => errores.push(e.to_string()),
+            }
+        }
+        (todos, errores)
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn install_api(
     lua: &Lua,
     registered: &Rc<RefCell<Vec<(String, String, RegistryKey)>>>,
     binds: &Rc<RefCell<Vec<PluginBind>>>,
+    manejadores: &Rc<RefCell<Vec<(Evento, RegistryKey)>>>,
     efectos: &Rc<RefCell<Vec<PluginEffect>>>,
     ctx: &Rc<RefCell<PluginContext>>,
 ) -> mlua::Result<()> {
@@ -254,6 +324,22 @@ fn install_api(
         },
     )?;
     flint.set("bind", bind)?;
+
+    // `flint.on("save", function() ... end)`. Un nombre de evento que no
+    // existe es un error al cargar el script, no un manejador que nunca
+    // corre sin que nadie se entere.
+    let celda = manejadores.clone();
+    let on = lua.create_function(move |lua_ctx, (nombre, f): (String, Function)| {
+        let evento = Evento::de_nombre(&nombre).ok_or_else(|| {
+            mlua::Error::RuntimeError(format!(
+                "evento desconocido \"{nombre}\" (hay: open, before_save, save)"
+            ))
+        })?;
+        let key = lua_ctx.create_registry_value(f)?;
+        celda.borrow_mut().push((evento, key));
+        Ok(())
+    })?;
+    flint.set("on", on)?;
 
     // ---------- lectura, adentro de un comando ----------
 
@@ -518,6 +604,52 @@ mod tests {
         assert_eq!(carga.commands.len(), 1, "el script sano tenía que cargar");
         assert_eq!(carga.errors.len(), 1, "y el roto tenía que avisar");
         limpiar(dir);
+    }
+
+    #[test]
+    fn los_eventos_corren_sus_manejadores_en_orden() {
+        let (carga, dir) = cargar(
+            "eventos-orden",
+            r#"
+            flint.on("save", function() flint.status("uno " .. flint.filename()) end)
+            flint.on("open", function() flint.insert_text("abierto") end)
+            flint.on("save", function() flint.status("dos") end)
+            "#,
+        );
+        limpiar(dir);
+        assert!(carga.errors.is_empty(), "{:?}", carga.errors);
+        let b = &carga.bridge;
+        assert!(b.escucha(Evento::Guardar) && b.escucha(Evento::Abrir));
+        assert!(!b.escucha(Evento::AntesDeGuardar));
+        let (efectos, errores) = b.emitir(Evento::Guardar, ctx_de_prueba());
+        assert!(errores.is_empty());
+        assert_eq!(textos(&efectos), vec!["status:uno /tmp/x.rs", "status:dos"]);
+        let (efectos, _) = b.emitir(Evento::Abrir, ctx_de_prueba());
+        assert_eq!(textos(&efectos), vec!["insert:abierto"]);
+    }
+
+    #[test]
+    fn un_manejador_que_falla_no_frena_a_los_demas() {
+        let (carga, dir) = cargar(
+            "eventos-falla",
+            r#"
+            flint.on("save", function() flint.status("a medias"); error("roto") end)
+            flint.on("save", function() flint.status("sigue") end)
+            "#,
+        );
+        limpiar(dir);
+        let (efectos, errores) = carga.bridge.emitir(Evento::Guardar, ctx_de_prueba());
+        assert_eq!(textos(&efectos), vec!["status:sigue"]);
+        assert_eq!(errores.len(), 1);
+        assert!(errores[0].contains("roto"), "{}", errores[0]);
+    }
+
+    #[test]
+    fn un_evento_que_no_existe_es_un_error_al_cargar() {
+        let (carga, dir) = cargar("eventos-desconocido", r#"flint.on("guardar", function() end)"#);
+        limpiar(dir);
+        assert_eq!(carga.errors.len(), 1);
+        assert!(carga.errors[0].contains("evento desconocido"), "{}", carga.errors[0]);
     }
 
     #[test]

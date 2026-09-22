@@ -460,6 +460,42 @@ Las teclas de los plugins se consultan **antes** que el perfil de teclado, así
 que un plugin puede pisar una tecla que Flint ya usa. Es a propósito: si se
 miraran después, un plugin nunca podría reemplazar un atajo existente.
 
+### Eventos
+
+Además de los comandos, que corren cuando se los invoca, un script puede
+reaccionar a lo que pasa en el editor:
+
+```lua
+flint.on("open", function() ... end)         -- se abrió un archivo (también el primero)
+flint.on("before_save", function() ... end)  -- se va a guardar
+flint.on("save", function() ... end)         -- se guardó
+```
+
+Adentro de un manejador valen las mismas funciones que en un comando: ve la
+foto del archivo del que se trata y pide cambios. Lo que pide un manejador de
+`before_save` se aplica **antes** de escribir el archivo, así que puede
+cambiar lo que se guarda:
+
+```lua
+-- Que todo archivo termine en salto de línea.
+flint.on("before_save", function()
+    if flint.text():sub(-1) ~= "\n" then
+        local n = flint.line_count()
+        flint.set_cursor(n, #flint.line(n) + 1)
+        flint.insert_text("\n")
+    end
+end)
+```
+
+- Varios manejadores del mismo evento corren en el orden en que se cargaron,
+  y todos ven la misma foto.
+- Si uno falla, se descarta lo que había pedido, los demás corren igual, y el
+  error queda en la barra de estado.
+- Lo que haga un manejador no dispara eventos: un `flint.action("save")`
+  dentro de un manejador de `save` guarda una vez y no entra en un bucle.
+- Un nombre de evento que no existe es un error al cargar el script, no un
+  manejador que nunca corre.
+
 ### Un ejemplo completo
 
 ```lua
@@ -482,8 +518,8 @@ siga cargando sin errores.
 
 **Lo que un plugin todavía no puede hacer**: abrir o guardar archivos por su
 cuenta (salvo con `flint.action("save")`), definir un lenguaje nuevo con su
-propio resaltado, ni correr mientras el usuario escribe — un comando solo
-corre cuando se lo invoca, desde la paleta o desde su tecla.
+propio resaltado, ni correr mientras el usuario escribe: corre cuando se lo
+invoca o ante uno de los eventos de arriba.
 
 ## Ir a la definición y renombrar (LSP)
 

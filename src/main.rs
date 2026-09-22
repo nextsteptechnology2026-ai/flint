@@ -210,6 +210,10 @@ struct App {
     /// se rehace solo cuando cambió algo de lo que depende, no en cada frame.
     preview_lines: Vec<ratatui::text::Line<'static>>,
     preview_key: Option<(usize, u64, u16)>,
+    /// Si se están corriendo los manejadores de un evento de plugin. Lo que
+    /// pidan (un `flint.action("save")` en un manejador de guardado, por
+    /// ejemplo) no vuelve a disparar eventos: sería un bucle.
+    en_evento: bool,
 }
 
 /// El identificador que usa LSP para este lenguaje. Sale de la tabla de
@@ -606,7 +610,9 @@ fn main() -> io::Result<()> {
         clipboard: arboard::Clipboard::new().ok(),
         preview_lines: Vec::new(),
         preview_key: None,
+        en_evento: false,
     };
+    emitir_evento(&mut app, plugins::Evento::Abrir);
 
     let result = run(&mut terminal, &mut app);
 
@@ -869,6 +875,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
         }
         poll_lsp(app);
         sync_lsp_if_needed(app);
+        avisar_guardados(app);
         check_theme_reload(app);
         write_backups(app);
 
@@ -2518,6 +2525,9 @@ fn open_file_into_new_buffer(app: &mut App, path_str: String) {
             let count = app.buffers.len();
             app.buffers[app.active].ed.status =
                 format!("{} — {count} buffer(s) abierto(s)", app.buffers[app.active].ed.status);
+            // Al final, para que lo que diga el plugin sea lo que queda a la
+            // vista.
+            emitir_evento(app, plugins::Evento::Abrir);
         }
         Err(e) => app.buffers[app.active].ed.status = format!("No se pudo abrir \"{trimmed}\": {e}"),
     }
@@ -3175,6 +3185,42 @@ fn run_plugin_command(app: &mut App, i: usize) {
             app.buffers[app.active].ed.status = format!("Error en el plugin \"{id}\": {e}");
         }
     }
+}
+
+/// Corre los manejadores de `evento` sobre el buffer activo y aplica lo que
+/// pidan. Si alguno falló, lo dice la barra de estado.
+fn emitir_evento(app: &mut App, evento: plugins::Evento) {
+    let escucha = app.plugins.as_ref().is_some_and(|b| b.escucha(evento));
+    if app.en_evento || !escucha {
+        return;
+    }
+    app.en_evento = true;
+    let ctx = plugin_context(app);
+    let (efectos, errores) = app.plugins.as_ref().expect("recién comprobado").emitir(evento, ctx);
+    for efecto in efectos {
+        aplicar_efecto(app, efecto);
+    }
+    if let Some(e) = errores.first() {
+        app.buffers[app.active].ed.status = format!("Error en un plugin (evento {}): {e}", evento.nombre());
+    }
+    app.en_evento = false;
+}
+
+/// Avisa `save` por cada buffer que se guardó desde la última vuelta. Lo que
+/// guarden los propios manejadores no vuelve a avisar.
+fn avisar_guardados(app: &mut App) {
+    let activo = app.active;
+    for i in 0..app.buffers.len() {
+        if !std::mem::take(&mut app.buffers[i].ed.recien_guardado) {
+            continue;
+        }
+        app.active = i;
+        emitir_evento(app, plugins::Evento::Guardar);
+        if let Some(b) = app.buffers.get_mut(i) {
+            b.ed.recien_guardado = false;
+        }
+    }
+    app.active = activo.min(app.buffers.len().saturating_sub(1));
 }
 
 /// La foto del editor que ve un comando de plugin.
@@ -3968,6 +4014,7 @@ const ESPERA_FORMATO: Duration = Duration::from_secs(2);
 /// prendido para ese archivo. Si el formato no se pudo, se guarda igual y el
 /// motivo queda en la barra de estado junto al "Guardado".
 fn guardar(app: &mut App, then_quit: bool) {
+    emitir_evento(app, plugins::Evento::AntesDeGuardar);
     let aviso = if app.buffers[app.active].ed.format_on_save {
         formatear_ahora(app, true)
     } else {
@@ -4189,6 +4236,55 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             ed.row_offset = ed.row_offset.saturating_sub(3);
         }
         _ => {}
+    }
+}
+
+/// Un `App` para los tests: el buffer dado, sin servidor de lenguaje, sin
+/// plugins y con la configuración de fábrica. Cada test le cambia lo que
+/// necesita.
+#[cfg(test)]
+fn app_de_prueba(buffer: Buffer) -> App {
+    App {
+        buffers: vec![buffer],
+        active: 0,
+        text_area: Rect { x: 0, y: 1, width: 80, height: 20 },
+        tabs_area: None,
+        lsp: None,
+        lsp_lang: None,
+        lsp_incremental: false,
+        lsp_definition: false,
+        lsp_rename: false,
+        lsp_hover: false,
+        lsp_format: false,
+        lsp_firma: false,
+        firma: None,
+        lsp_forzar_sync: false,
+        last_was_select_line: false,
+        keymap: keymap::flint_profile(),
+        pending_prefix: None,
+        palette_entries: builtin_palette_entries(),
+        plugin_commands: Vec::new(),
+        plugins: None,
+        plugin_keys: HashMap::new(),
+        theme: theme::Theme::default(),
+        theme_path: None,
+        theme_mtime: None,
+        theme_next_check: Instant::now(),
+        clipboard_mode: clipboard::Mode::Internal,
+        macro_recording: None,
+        macro_last: Vec::new(),
+        file_index: Vec::new(),
+        search_files: Vec::new(),
+        search_root: PathBuf::new(),
+        search_partial: false,
+        search_hits: Vec::new(),
+        saltos: saltos::ListaSaltos::default(),
+        hover_lines: Vec::new(),
+        config: config::Config::default(),
+        clipboard: None,
+        preview_lines: Vec::new(),
+        preview_key: None,
+        en_evento: false,
     }
 }
 
@@ -4627,47 +4723,15 @@ mod tests_lsp_de_punta_a_punta {
         buffer.doc_uri = Some(uri);
         buffer.lsp_lang_id = Some("rust");
 
-        let app = App {
-            buffers: vec![buffer],
-            active: 0,
-            text_area: Rect { x: 0, y: 1, width: 80, height: 20 },
-            tabs_area: None,
-            lsp: Some(client),
-            lsp_lang: Some("rust"),
-            lsp_incremental: caps.incremental,
-            lsp_definition: caps.definition,
-            lsp_rename: caps.rename,
-            lsp_hover: caps.hover,
-            lsp_format: caps.format,
-            lsp_firma: caps.firma,
-            firma: None,
-            lsp_forzar_sync: false,
-            last_was_select_line: false,
-            keymap: keymap::flint_profile(),
-            pending_prefix: None,
-            palette_entries: builtin_palette_entries(),
-            plugin_commands: Vec::new(),
-            plugins: None,
-            plugin_keys: HashMap::new(),
-            theme: theme::Theme::default(),
-            theme_path: None,
-            theme_mtime: None,
-            theme_next_check: Instant::now(),
-            clipboard_mode: clipboard::Mode::Internal,
-            macro_recording: None,
-            macro_last: Vec::new(),
-            file_index: Vec::new(),
-            search_files: Vec::new(),
-            search_root: PathBuf::new(),
-            search_partial: false,
-            search_hits: Vec::new(),
-            saltos: saltos::ListaSaltos::default(),
-            hover_lines: Vec::new(),
-            config: config::Config::default(),
-            clipboard: None,
-            preview_lines: Vec::new(),
-            preview_key: None,
-        };
+        let mut app = app_de_prueba(buffer);
+        app.lsp = Some(client);
+        app.lsp_lang = Some("rust");
+        app.lsp_incremental = caps.incremental;
+        app.lsp_definition = caps.definition;
+        app.lsp_rename = caps.rename;
+        app.lsp_hover = caps.hover;
+        app.lsp_format = caps.format;
+        app.lsp_firma = caps.firma;
         let mut p = Prueba { app, espejo, dir };
         // El servidor escribe el espejo al recibir el didOpen.
         esperar(&mut p, "el didOpen", |p| std::fs::read_to_string(&p.espejo).is_ok_and(|t| t == texto));
@@ -4858,5 +4922,83 @@ mod tests_lsp_de_punta_a_punta {
         dispatch_action(&mut p.app, Action::Format, 10);
         assert_eq!(texto(&p), "fn main() {\n    x();\n}\n");
         sincronizar(&mut p);
+    }
+}
+
+#[cfg(test)]
+mod tests_eventos_de_plugins {
+    //! Los eventos de plugin de punta a punta: un script de verdad, cargado
+    //! desde disco, sobre archivos de verdad.
+    use super::*;
+
+    const SCRIPT: &str = r#"
+        flint.on("open", function() flint.status("abierto " .. flint.filename()) end)
+
+        -- Antes de guardar: que el archivo termine en salto de línea.
+        flint.on("before_save", function()
+          if flint.text():sub(-1) ~= "\n" then
+            local n = flint.line_count()
+            flint.set_cursor(n, #flint.line(n) + 1)
+            flint.insert_text("\n")
+          end
+        end)
+
+        -- Al guardar: una marca y guardar otra vez. Ese segundo guardado no
+        -- tiene que volver a disparar el evento.
+        flint.on("save", function()
+          flint.insert_text("x")
+          flint.action("save")
+        end)
+    "#;
+
+    fn preparar(nombre: &str) -> (App, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("flint-eventos-{}-{nombre}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+        std::fs::write(dir.join("plugins/eventos.lua"), SCRIPT).unwrap();
+        std::fs::write(dir.join("a.txt"), "hola").unwrap();
+        std::fs::write(dir.join("b.txt"), "otro\n").unwrap();
+        let mut app = app_de_prueba(Buffer::open(Some(dir.join("a.txt"))).unwrap());
+        let carga = plugins::PluginBridge::load(&[dir.join("plugins")]);
+        assert!(carga.errors.is_empty(), "{:?}", carga.errors);
+        app.plugins = Some(carga.bridge);
+        (app, dir)
+    }
+
+    #[test]
+    fn abrir_avisa_con_el_archivo_que_se_abrio() {
+        let (mut app, dir) = preparar("abrir");
+        emitir_evento(&mut app, plugins::Evento::Abrir);
+        assert!(app.buffers[0].ed.status.ends_with("a.txt"), "{}", app.buffers[0].ed.status);
+        open_file_into_new_buffer(&mut app, dir.join("b.txt").display().to_string());
+        assert_eq!(app.active, 1);
+        assert!(app.buffers[1].ed.status.ends_with("b.txt"), "{}", app.buffers[1].ed.status);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn antes_de_guardar_cambia_lo_que_se_escribe_y_guardar_no_se_repite() {
+        let (mut app, dir) = preparar("guardar");
+        dispatch_action(&mut app, Action::Save, 10);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hola\n");
+
+        avisar_guardados(&mut app);
+        // El manejador puso su marca y guardó: una sola vez, aunque ese
+        // guardado también marcó el buffer como recién guardado.
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hola\nx");
+        avisar_guardados(&mut app);
+        avisar_guardados(&mut app);
+        assert_eq!(app.buffers[0].ed.rope.to_string(), "hola\nx");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sin_manejadores_no_se_arma_la_foto_ni_pasa_nada() {
+        let (mut app, dir) = preparar("sin");
+        app.plugins = Some(plugins::PluginBridge::load(&[]).bridge);
+        dispatch_action(&mut app, Action::Save, 10);
+        avisar_guardados(&mut app);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hola");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
