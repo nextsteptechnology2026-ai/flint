@@ -2857,13 +2857,30 @@ fn open_project_search(app: &mut App) {
         .selected_text()
         .filter(|t| !t.is_empty() && !t.contains('\n'))
         .unwrap_or_default();
-    actualizar_busqueda(app, inicial);
+    actualizar_busqueda(app, inicial, false);
 }
 
 /// Corre la consulta y deja el modo con el resultado. Se llama en cada
 /// tecla: la búsqueda es sobre memoria, no sobre el disco.
-fn actualizar_busqueda(app: &mut App, query: String) {
-    let r = busqueda::buscar(&app.search_files, &query);
+fn actualizar_busqueda(app: &mut App, query: String, regex: bool) {
+    let r = if !regex {
+        Ok(busqueda::buscar(&app.search_files, &query))
+    } else if query.is_empty() {
+        Ok(busqueda::Resultado { coincidencias: Vec::new(), recortado: false, archivos: 0 })
+    } else {
+        busqueda::expresion(&query, true).map(|re| busqueda::buscar_con(&app.search_files, &re))
+    };
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => {
+            // Mientras se escribe, la regex pasa por estados inválidos (un
+            // paréntesis abierto): se dice por qué y se deja la lista vacía.
+            app.search_hits = Vec::new();
+            let resumen = format!("(regex inválida: {e})");
+            app.buffers[app.active].ed.mode = Mode::ProjectSearch { query, selected: 0, resumen, regex };
+            return;
+        }
+    };
     let mut resumen = if query.is_empty() {
         format!("({} archivo(s) en {})", app.search_files.len(), app.search_root.display())
     } else if r.coincidencias.is_empty() {
@@ -2877,7 +2894,7 @@ fn actualizar_busqueda(app: &mut App, query: String) {
         resumen.push_str(" — proyecto muy grande: se leyó solo una parte");
     }
     app.search_hits = r.coincidencias;
-    app.buffers[app.active].ed.mode = Mode::ProjectSearch { query, selected: 0, resumen };
+    app.buffers[app.active].ed.mode = Mode::ProjectSearch { query, selected: 0, resumen, regex };
 }
 
 fn cerrar_busqueda(app: &mut App) {
@@ -2886,11 +2903,12 @@ fn cerrar_busqueda(app: &mut App) {
 }
 
 /// Escribir busca, las flechas (y RePág/AvPág) eligen, Enter salta a la
-/// coincidencia y Esc cancela.
+/// coincidencia y Esc cancela. Tab alterna entre texto y regex, y Ctrl+R
+/// pasa a pedir con qué reemplazar.
 fn handle_project_search_key(app: &mut App, key: KeyEvent) {
-    let (mut query, mut selected, resumen) =
+    let (mut query, mut selected, mut resumen, regex) =
         match std::mem::replace(&mut app.buffers[app.active].ed.mode, Mode::Editing) {
-            Mode::ProjectSearch { query, selected, resumen } => (query, selected, resumen),
+            Mode::ProjectSearch { query, selected, resumen, regex } => (query, selected, resumen, regex),
             other => {
                 app.buffers[app.active].ed.mode = other;
                 return;
@@ -2913,12 +2931,22 @@ fn handle_project_search_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Backspace => {
             query.pop();
-            actualizar_busqueda(app, query);
+            actualizar_busqueda(app, query, regex);
             return;
+        }
+        KeyCode::Tab => {
+            actualizar_busqueda(app, query, !regex);
+            return;
+        }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            match preparar_reemplazo_en_proyecto(app, &query, regex) {
+                Ok(()) => return,
+                Err(por_que) => resumen = por_que,
+            }
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             query.push(c);
-            actualizar_busqueda(app, query);
+            actualizar_busqueda(app, query, regex);
             return;
         }
         KeyCode::Up if total > 0 => selected = selected.checked_sub(1).unwrap_or(total - 1),
@@ -2927,7 +2955,95 @@ fn handle_project_search_key(app: &mut App, key: KeyEvent) {
         KeyCode::PageDown if total > 0 => selected = (selected + 10).min(total - 1),
         _ => {}
     }
-    app.buffers[app.active].ed.mode = Mode::ProjectSearch { query, selected, resumen };
+    app.buffers[app.active].ed.mode = Mode::ProjectSearch { query, selected, resumen, regex };
+}
+
+/// Cierra el buscador y pide con qué reemplazar. Si no hay nada que
+/// reemplazar, el buscador sigue abierto y el error dice por qué.
+fn preparar_reemplazo_en_proyecto(app: &mut App, query: &str, regex: bool) -> Result<(), String> {
+    let re = busqueda::expresion(query, regex).map_err(|e| format!("(regex inválida: {e})"))?;
+    let rutas: Vec<PathBuf> = if query.is_empty() {
+        Vec::new()
+    } else {
+        busqueda::rutas_con(&app.search_files, &re)
+            .into_iter()
+            .map(|r| app.search_root.join(r))
+            .collect()
+    };
+    if rutas.is_empty() {
+        return Err("(nada que reemplazar)".to_string());
+    }
+    if rutas.len() > MAX_ARCHIVOS_RENOMBRE {
+        return Err(format!(
+            "(aparece en {} archivos, más del tope de {MAX_ARCHIVOS_RENOMBRE} para reemplazar; afiná la búsqueda)",
+            rutas.len()
+        ));
+    }
+    let parcial = if app.search_partial { " (del que se leyó)" } else { "" };
+    let label = format!("Reemplazar \"{query}\" en {} archivo(s){parcial} por: ", rutas.len());
+    cerrar_busqueda(app);
+    app.buffers[app.active].ed.mode = Mode::Prompt {
+        kind: PromptKind::ReplaceProject { consulta: query.to_string(), regex, rutas },
+        buffer: String::new(),
+        label,
+    };
+    Ok(())
+}
+
+/// Reemplaza en cada archivo todas las apariciones, no una por línea como
+/// muestra la lista. Igual que el renombre, los archivos quedan abiertos y
+/// sin guardar para revisarlos, y un Ctrl+Z deshace el reemplazo entero de
+/// un archivo. Se calcula contra el texto de cada buffer, que es lo que se
+/// buscó (lo abierto manda sobre el disco).
+fn reemplazar_en_proyecto(app: &mut App, consulta: &str, regex: bool, rutas: &[PathBuf], con: &str) {
+    let Ok(re) = busqueda::expresion(consulta, regex) else { return };
+    let volver_a = app.active;
+    let (mut archivos, mut total, mut abiertos) = (0usize, 0usize, 0usize);
+    for ruta in rutas {
+        let destino = std::fs::canonicalize(ruta).ok();
+        let idx = match app.buffers.iter().position(|b| {
+            destino.is_some() && b.ed.filename.as_ref().and_then(|f| std::fs::canonicalize(f).ok()) == destino
+        }) {
+            Some(i) => i,
+            None => {
+                let antes = app.buffers.len();
+                open_file_into_new_buffer(app, ruta.display().to_string());
+                if app.buffers.len() == antes {
+                    continue;
+                }
+                abiertos += 1;
+                app.buffers.len() - 1
+            }
+        };
+        let ed = &mut app.buffers[idx].ed;
+        let cambios = cambios_de_reemplazo(ed, &re, con, regex);
+        if ed.replace_ranges(&cambios) > 0 {
+            archivos += 1;
+            total += cambios.len();
+        }
+    }
+    app.active = volver_a.min(app.buffers.len().saturating_sub(1));
+    let sin_guardar = if abiertos > 0 { format!(", {abiertos} abierto(s) sin guardar") } else { String::new() };
+    app.buffers[app.active].ed.status = format!("Reemplazadas {total} aparición(es) en {archivos} archivo(s){sin_guardar}");
+}
+
+/// Los reemplazos de un buffer, pasados de bytes a posiciones del editor.
+fn cambios_de_reemplazo(
+    ed: &Editor,
+    re: &regex::Regex,
+    con: &str,
+    regex: bool,
+) -> Vec<(editor::Position, editor::Position, String)> {
+    let texto = ed.rope.to_string();
+    let posicion = |byte: usize| {
+        let c = ed.rope.byte_to_char(byte);
+        let linea = ed.rope.char_to_line(c);
+        editor::Position { line: linea, col: c - ed.rope.line_to_char(linea) }
+    };
+    busqueda::reemplazos(&texto, re, con, regex)
+        .into_iter()
+        .map(|(a, b, nuevo)| (posicion(a), posicion(b), nuevo))
+        .collect()
 }
 
 /// Lleva a la coincidencia: a la pestaña donde ya está abierto el archivo,
@@ -3662,6 +3778,9 @@ fn submit_prompt(app: &mut App, kind: PromptKind, buffer: String) {
         PromptKind::OpenFile => open_file_into_new_buffer(app, buffer),
         PromptKind::SaveAs { then_quit } => handle_save_as(app, then_quit, buffer),
         PromptKind::Rename { palabra } => pedir_renombre(app, palabra, buffer),
+        PromptKind::ReplaceProject { consulta, regex, rutas } => {
+            reemplazar_en_proyecto(app, &consulta, regex, &rutas, &buffer)
+        }
         PromptKind::GotoLine => {
             registrar_salto(app);
             submit_prompt_editor(&mut app.buffers[app.active].ed, PromptKind::GotoLine, buffer);
@@ -3730,7 +3849,7 @@ fn submit_prompt_editor(ed: &mut Editor, kind: PromptKind, buffer: String) {
         // `Rename` lo atiende `submit_prompt`, que tiene acceso a `App`: el
         // servidor puede devolver cambios en varios archivos, no solo en
         // este buffer. Acá no llega nunca.
-        PromptKind::Rename { .. } => {}
+        PromptKind::Rename { .. } | PromptKind::ReplaceProject { .. } => {}
         PromptKind::GotoLine => match buffer.trim().parse::<usize>() {
             // Se cuenta desde 1 porque es como se cuenta en la barra de
             // estado y en cualquier mensaje de error de un compilador.
@@ -4348,6 +4467,23 @@ mod tests_lsp_definicion_y_renombre {
         let b = json!({"capabilities": {"definitionProvider": false}});
         let c = Capacidades::de(&b);
         assert!(!c.definition && !c.rename && !c.hover);
+    }
+
+    #[test]
+    fn el_reemplazo_en_el_proyecto_cae_en_la_linea_y_columna_justas() {
+        let mut ed = editor_con("ñandú = uno;\n😀 uno(uno)\n");
+        let re = busqueda::expresion("uno", false).unwrap();
+        let cambios = cambios_de_reemplazo(&ed, &re, "dos", false);
+        let pos = |l, c| editor::Position { line: l, col: c };
+        assert_eq!(
+            cambios.iter().map(|(a, b, _)| (*a, *b)).collect::<Vec<_>>(),
+            vec![(pos(0, 8), pos(0, 11)), (pos(1, 2), pos(1, 5)), (pos(1, 6), pos(1, 9))]
+        );
+        ed.replace_ranges(&cambios);
+        assert_eq!(ed.rope.to_string(), "ñandú = dos;\n😀 dos(dos)\n");
+        // Un solo paso de deshacer para todo el archivo.
+        ed.undo();
+        assert_eq!(ed.rope.to_string(), "ñandú = uno;\n😀 uno(uno)\n");
     }
 
     #[test]

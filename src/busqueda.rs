@@ -8,6 +8,8 @@
 
 use std::path::Path;
 
+use regex::{Regex, RegexBuilder};
+
 /// Un archivo más grande que esto casi nunca es algo escrito a mano (datos,
 /// minificados, logs) y arrastraría cada búsqueda.
 const MAX_BYTES_POR_ARCHIVO: u64 = 1024 * 1024;
@@ -140,14 +142,7 @@ pub fn buscar(archivos: &[Archivo], consulta: &str) -> Resultado {
             // minúsculas no toca los saltos), así que se busca por número.
             let original = originales.nth(linea - siguiente_original).unwrap_or("");
             siguiente_original = linea + 1;
-            // Un tabulador en medio de la lista ocuparía un ancho que el
-            // popup no controla.
-            let limpio = original.trim().replace('\t', " ");
-            let limpio = limpio.as_str();
-            let mut texto: String = limpio.chars().take(MAX_TEXTO).collect();
-            if limpio.chars().count() > MAX_TEXTO {
-                texto.push('…');
-            }
+            let texto = para_mostrar(original);
             coincidencias.push(Coincidencia { archivo: i, linea, col, texto });
             hubo = true;
             if coincidencias.len() >= MAX_COINCIDENCIAS {
@@ -166,6 +161,99 @@ pub fn buscar(archivos: &[Archivo], consulta: &str) -> Resultado {
         }
     }
     Resultado { coincidencias, recortado: false, archivos: con_algo }
+}
+
+/// La línea como se ve en la lista: sin sangría y recortada. Un tabulador
+/// en medio ocuparía un ancho que el popup no controla.
+fn para_mostrar(linea: &str) -> String {
+    let limpio = linea.trim().replace('\t', " ");
+    let mut texto: String = limpio.chars().take(MAX_TEXTO).collect();
+    if limpio.chars().count() > MAX_TEXTO {
+        texto.push('…');
+    }
+    texto
+}
+
+/// La expresión con la que se busca y se reemplaza: la consulta tal cual si
+/// es una regex, o escapada si es texto literal. Misma regla de mayúsculas
+/// que `buscar` (lo que va después de una `\` no cuenta: `\S` no es una
+/// mayúscula), y `^` y `$` son el principio y el fin de cada línea.
+pub fn expresion(consulta: &str, regex: bool) -> Result<Regex, String> {
+    let patron = if regex { consulta.to_string() } else { regex::escape(consulta) };
+    let mut escapado = false;
+    let mut distinguir = false;
+    for c in consulta.chars() {
+        if escapado && regex {
+            escapado = false;
+            continue;
+        }
+        escapado = c == '\\';
+        distinguir |= c.is_uppercase();
+    }
+    RegexBuilder::new(&patron)
+        .multi_line(true)
+        .case_insensitive(!distinguir)
+        .build()
+        .map_err(|e| e.to_string().lines().last().unwrap_or("regex inválida").trim().to_string())
+}
+
+/// Como `buscar`, pero con una expresión regular. Una coincidencia por
+/// línea, igual que la búsqueda literal.
+pub fn buscar_con(archivos: &[Archivo], re: &Regex) -> Resultado {
+    let mut coincidencias = Vec::new();
+    let mut con_algo = 0usize;
+    for (i, archivo) in archivos.iter().enumerate() {
+        let texto = &archivo.texto;
+        let mut linea = 0usize;
+        let mut contado_hasta = 0usize;
+        let mut ultima = None;
+        for m in re.find_iter(texto) {
+            linea += texto[contado_hasta..m.start()].matches('\n').count();
+            contado_hasta = m.start();
+            if ultima == Some(linea) {
+                continue;
+            }
+            ultima = Some(linea);
+            let inicio_linea = texto[..m.start()].rfind('\n').map_or(0, |p| p + 1);
+            let fin_linea = texto[m.start()..].find('\n').map_or(texto.len(), |p| m.start() + p);
+            let col = texto[inicio_linea..m.start()].chars().count();
+            let mostrado = para_mostrar(&texto[inicio_linea..fin_linea]);
+            coincidencias.push(Coincidencia { archivo: i, linea, col, texto: mostrado });
+            if coincidencias.len() >= MAX_COINCIDENCIAS {
+                return Resultado { coincidencias, recortado: true, archivos: con_algo + 1 };
+            }
+        }
+        if ultima.is_some() {
+            con_algo += 1;
+        }
+    }
+    Resultado { coincidencias, recortado: false, archivos: con_algo }
+}
+
+/// Las rutas de los archivos donde `re` aparece al menos una vez. Es lo que
+/// toca un reemplazo: todos, no solo los que entraron en la lista.
+pub fn rutas_con(archivos: &[Archivo], re: &Regex) -> Vec<String> {
+    archivos.iter().filter(|a| re.is_match(&a.texto)).map(|a| a.ruta.clone()).collect()
+}
+
+/// Qué cambiar en `texto` para reemplazar cada aparición de `re` por `con`:
+/// rangos en bytes y el texto nuevo. Todas las apariciones, no una por
+/// línea. Con `regex`, `con` puede usar los grupos (`$1`, `${nombre}`); sin
+/// regex va tal cual, aunque tenga un `$`.
+pub fn reemplazos(texto: &str, re: &Regex, con: &str, regex: bool) -> Vec<(usize, usize, String)> {
+    re.captures_iter(texto)
+        .filter_map(|c| {
+            let m = c.get(0)?;
+            let nuevo = if regex {
+                let mut s = String::new();
+                c.expand(con, &mut s);
+                s
+            } else {
+                con.to_string()
+            };
+            Some((m.start(), m.end(), nuevo))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -238,6 +326,41 @@ mod tests {
         let r = buscar(&p, "x");
         assert_eq!(r.coincidencias.len(), MAX_COINCIDENCIAS);
         assert!(r.recortado);
+    }
+
+    #[test]
+    fn con_regex_encuentra_por_linea_y_con_la_misma_regla_de_mayusculas() {
+        let p = proyecto(&[("a", "fn uno() {}\nfn dos() {}\nlet x = uno();\n"), ("b", "FN tres()")]);
+        let re = expresion(r"^fn \w+", true).unwrap();
+        assert_eq!(donde(&buscar_con(&p, &re)), vec![(0, 0, 0), (0, 1, 0), (1, 0, 0)]);
+        // Con una mayúscula, distingue. La de `\W` no cuenta como mayúscula.
+        let re = expresion(r"FN\W", true).unwrap();
+        assert_eq!(donde(&buscar_con(&p, &re)), vec![(1, 0, 0)]);
+        let re = expresion(r"uno\W", true).unwrap();
+        assert_eq!(donde(&buscar_con(&p, &re)), vec![(0, 0, 3), (0, 2, 8)]);
+        // Una por línea también con regex.
+        let re = expresion("o", true).unwrap();
+        assert_eq!(buscar_con(&p, &re).coincidencias.len(), 3);
+    }
+
+    #[test]
+    fn una_regex_invalida_dice_por_que() {
+        let e = expresion("(sin cerrar", true).unwrap_err();
+        assert!(e.contains("unclosed") || e.contains("group"), "{e}");
+        // En modo literal los paréntesis son texto.
+        assert!(expresion("(sin cerrar", false).is_ok());
+    }
+
+    #[test]
+    fn reemplaza_todas_las_apariciones_con_grupos_solo_en_regex() {
+        let re = expresion(r"(\w+)\.len\(\)", true).unwrap();
+        let r = reemplazos("a.len() + b.len()", &re, "len($1)", true);
+        assert_eq!(r, vec![(0, 7, "len(a)".to_string()), (10, 17, "len(b)".to_string())]);
+
+        // Literal: el `$` va tal cual, y los puntos no son comodines.
+        let re = expresion("a.b", false).unwrap();
+        let r = reemplazos("a.b axb A.B", &re, "$1", false);
+        assert_eq!(r, vec![(0, 3, "$1".to_string()), (8, 11, "$1".to_string())]);
     }
 
     #[test]

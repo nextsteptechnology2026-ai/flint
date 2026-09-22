@@ -188,6 +188,9 @@ pub enum PromptKind {
     /// no acá: el servidor de lenguaje puede contestar cambios en varios
     /// archivos, no solo en este buffer.
     Rename { palabra: String },
+    /// El texto que reemplaza a `consulta` en `rutas`, los archivos del
+    /// proyecto donde aparece. Se resuelve en `App`: abre los archivos.
+    ReplaceProject { consulta: String, regex: bool, rutas: Vec<std::path::PathBuf> },
 }
 
 pub enum Mode {
@@ -222,7 +225,7 @@ pub enum Mode {
     /// en `App`, igual que la lista del buscador de archivos; acá va lo que
     /// se escribe, cuál está resaltada y el resumen de la última búsqueda
     /// ("12 en 3 archivos") para mostrarlo al lado.
-    ProjectSearch { query: String, selected: usize, resumen: String },
+    ProjectSearch { query: String, selected: usize, resumen: String, regex: bool },
     /// La ventana de hover (F1) abierta junto al cursor. Las líneas ya
     /// dibujadas viven en `App`; acá solo cuánto se desplazó.
     Hover { offset: usize },

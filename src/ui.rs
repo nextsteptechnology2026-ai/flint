@@ -270,7 +270,10 @@ fn draw_message(f: &mut Frame, ed: &Editor, area: Rect, theme: &Theme) {
         Mode::Palette { query, .. } => format!(" Paleta de comandos › {query}"),
         Mode::FilePicker { query, .. } => format!(" Abrir archivo › {query}"),
         Mode::Hover { .. } => " ↑↓ RePág AvPág desplazan · Esc cierra · cualquier otra tecla sigue editando".to_string(),
-        Mode::ProjectSearch { query, resumen, .. } => format!(" Buscar en el proyecto › {query}   {resumen}"),
+        Mode::ProjectSearch { query, resumen, regex, .. } => {
+            let modo = if *regex { "regex" } else { "texto" };
+            format!(" Buscar en el proyecto ({modo}) › {query}   {resumen}   · Tab regex/texto · ^R reemplazar")
+        }
         Mode::Editing => format!(" {}", ed.status),
     };
     let p = Paragraph::new(text).style(Style::default().fg(theme.bar_fg));

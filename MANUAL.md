@@ -60,7 +60,7 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copiar / Cortar / Pegar — con el portapapeles del sistema |
 | `Ctrl+O` | Abrir un archivo en un buffer nuevo (pide la ruta) |
 | `Ctrl+T` | Buscador difuso de archivos del proyecto — escribí parte del nombre y `Enter` lo abre |
-| `Ctrl+N` | Buscar texto en todos los archivos del proyecto — `Enter` salta a la coincidencia |
+| `Ctrl+N` | Buscar texto en todos los archivos del proyecto — `Enter` salta a la coincidencia, `Tab` alterna regex, `Ctrl+R` reemplaza en todos |
 | `F1` | Tipo y documentación de lo que está bajo el cursor (LSP) |
 | `Alt+Shift+F` | Formatear el archivo (LSP) |
 | `Alt+←` / `Alt+→` | Volver a donde estabas antes de un salto / rehacer el salto |
@@ -263,10 +263,12 @@ Se saltean los archivos y directorios ocultos y los que nunca se editan a mano (
 Busca texto en todos los archivos del proyecto mientras escribís. Cada renglón de la lista es `ruta:línea: texto`; `↑`/`↓` (o `RePág`/`AvPág` de a diez) eligen, `Enter` salta a esa línea —en la pestaña donde el archivo ya esté abierto, o en una nueva— y `Esc` cancela. Si había una selección de una sola línea al apretar `Ctrl+N`, se busca eso de entrada.
 
 - **Mayúsculas**: si lo que escribís es todo minúsculas, no las distingue (`error` encuentra `Error` y `ERROR`, tildes incluidas); en cuanto hay una mayúscula, sí (`Error` encuentra solo `Error`). Es la regla *smartcase* de Vim y ripgrep.
-- **Texto literal**, no regex, y una coincidencia por línea.
+- **Texto o regex**: `Tab` alterna entre las dos. Por defecto es texto literal; con regex, `^` y `$` son el principio y el fin de cada línea, y la regla de mayúsculas no cuenta lo que va después de una `\` (`\S` no es una mayúscula). Mientras la regex está incompleta, la barra dice por qué no vale. Se muestra una coincidencia por línea.
 - **Lo que ves, no lo que está en disco**: en un archivo abierto con cambios sin guardar se busca en lo que tiene el editor.
 - **Qué archivos**: la misma raíz y los mismos directorios ignorados que `Ctrl+T`. Además se saltean los binarios (los que tienen un byte nulo al principio), los que no son UTF-8 y los de más de 1 MB.
 - **Topes**: se muestran las primeras 1.000 coincidencias (la barra lo avisa: toca afinar la búsqueda), y se leen hasta 32 MB de proyecto. Si no entra entero, la barra también lo dice.
+
+**Reemplazar en todo el proyecto**: con la búsqueda escrita, `Ctrl+R` pide el texto nuevo y reemplaza *todas* las apariciones en todos los archivos donde aparece, no solo las que entraron en la lista ni una por línea. Con regex, el reemplazo puede usar los grupos (`$1`, `${nombre}`): buscar `(\w+)\.len\(\)` y reemplazar por `len($1)` convierte `a.len()` en `len(a)`. Los archivos quedan abiertos y **sin guardar**, para revisarlos antes; un `Ctrl+Z` deshace el reemplazo entero de ese archivo. Toca hasta 50 archivos, igual que el renombre: si son más, hay que afinar la búsqueda.
 
 El proyecto se lee a memoria al apretar `Ctrl+N` y se suelta al cerrar el buscador; cada tecla busca sobre esa copia, sin volver al disco. Con eso, un proyecto de 32 MB responde en unas decenas de milisegundos por tecla.
 
