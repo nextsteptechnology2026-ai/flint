@@ -42,6 +42,13 @@ pub enum Pending {
         desde: (usize, usize),
         palabra: String,
     },
+    /// "Ayuda de firmas": qué parámetros lleva la llamada que se está
+    /// escribiendo. Si el cursor se fue de la línea antes de la respuesta,
+    /// ya no se muestra.
+    Firma {
+        buffer: usize,
+        linea: usize,
+    },
     /// "Formatear". La respuesta se espera en el momento (ver
     /// `formatear_ahora` en main): si llega tarde, después de haberse
     /// guardado sin formatear, se descarta.
@@ -201,6 +208,14 @@ impl LspClient {
                     // pylsp, y Flint ya sabe dibujarlo con el código
                     // resaltado.
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
+                    // Flint muestra la firma en una línea y marca el
+                    // parámetro activo; la documentación no se muestra.
+                    "signatureHelp": {
+                        "signatureInformation": {
+                            "parameterInformation": { "labelOffsetSupport": true },
+                            "activeParameterSupport": true
+                        }
+                    },
                     "formatting": { "dynamicRegistration": false }
                 }
             }
@@ -333,6 +348,23 @@ impl LspClient {
                 "position": { "line": line, "character": character }
             }),
             Pending::Hover { buffer, desde, palabra },
+        )
+    }
+
+    pub fn request_signature_help(
+        &mut self,
+        uri: &str,
+        line: usize,
+        character: usize,
+        buffer: usize,
+    ) -> io::Result<u64> {
+        self.request(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            }),
+            Pending::Firma { buffer, linea: line },
         )
     }
 

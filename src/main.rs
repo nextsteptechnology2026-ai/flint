@@ -137,6 +137,10 @@ struct App {
     lsp_rename: bool,
     lsp_hover: bool,
     lsp_format: bool,
+    lsp_firma: bool,
+    /// La ayuda de firmas abierta, si hay una. No es un modo: se sigue
+    /// escribiendo con ella a la vista.
+    firma: Option<FirmaAbierta>,
     /// Salta el margen de espera de la sincronización. Se prende solo para
     /// las peticiones que dependen de que el servidor tenga el texto de
     /// ahora mismo (ir a la definición, renombrar).
@@ -249,6 +253,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Ir a la definición (^] o F12)", Action::GotoDefinition),
         ("Renombrar el símbolo… (F6)", Action::RenamePrompt),
         ("Qué es esto: tipo y documentación (F1)", Action::Hover),
+        ("Parámetros de la llamada (ayuda de firmas)", Action::SignatureHelp),
         ("Formatear el archivo (Alt+Shift+F)", Action::Format),
         ("Volver al lugar anterior (Alt+←)", Action::JumpBack),
         ("Avanzar al lugar siguiente (Alt+→)", Action::JumpForward),
@@ -556,8 +561,8 @@ fn main() -> io::Result<()> {
     let lang = buffer.lang;
     let (lsp_client, doc_uri, lsp_lang_id, caps) =
         setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme, &cfg);
-    let (lsp_incremental, lsp_definition, lsp_rename, lsp_hover, lsp_format) =
-        (caps.incremental, caps.definition, caps.rename, caps.hover, caps.format);
+    let (lsp_incremental, lsp_definition, lsp_rename, lsp_hover, lsp_format, lsp_firma) =
+        (caps.incremental, caps.definition, caps.rename, caps.hover, caps.format, caps.firma);
     buffer.doc_uri = doc_uri;
     buffer.lsp_lang_id = lsp_lang_id;
 
@@ -573,6 +578,8 @@ fn main() -> io::Result<()> {
         lsp_rename,
         lsp_hover,
         lsp_format,
+        lsp_firma,
+        firma: None,
         lsp_forzar_sync: false,
         last_was_select_line: false,
         keymap,
@@ -687,6 +694,7 @@ struct Capacidades {
     rename: bool,
     hover: bool,
     format: bool,
+    firma: bool,
 }
 
 impl Capacidades {
@@ -705,6 +713,7 @@ impl Capacidades {
             rename: tiene("renameProvider"),
             hover: tiene("hoverProvider"),
             format: tiene("documentFormattingProvider"),
+            firma: tiene("signatureHelpProvider"),
         }
     }
 }
@@ -742,6 +751,7 @@ fn finish_init(
         (caps.rename, "renombre"),
         (caps.hover, "hover"),
         (caps.format, "formato"),
+        (caps.firma, "firmas"),
     ]
     .iter()
     .filter(|(si, _)| *si)
@@ -888,6 +898,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
                 .collect(),
             _ => Vec::new(),
         };
+        cerrar_firma_si_corresponde(app);
         let tab_labels: Vec<String> = app.buffers.iter().map(Buffer::tab_label).collect();
         let ancho_total = terminal.size().map(|s| s.width).unwrap_or(80);
         refresh_preview(app, ancho_total);
@@ -896,6 +907,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
         } else {
             None
         };
+        let firma_linea = app.firma.as_ref().map(|f| linea_de_firma(&f.firma, &app.theme));
         terminal.draw(|f| {
             let datos = ui::FrameData {
                 palette_matches: &palette_labels,
@@ -904,6 +916,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
                 active_tab: app.active,
                 preview: preview_lines.map(Vec::as_slice),
                 hover: &app.hover_lines,
+                firma: firma_linea.as_ref(),
             };
             let areas = ui::draw(f, &mut app.buffers[app.active].ed, &datos, &app.theme);
             app.text_area = areas.text_area;
@@ -1020,6 +1033,9 @@ fn handle_lsp_message(app: &mut App, msg: Value) {
             }
             Some(lsp::Pending::Hover { buffer, desde, palabra }) => {
                 aplicar_hover(app, buffer, desde, &palabra, msg.get("result"));
+            }
+            Some(lsp::Pending::Firma { buffer, linea }) => {
+                aplicar_firma(app, buffer, linea, msg.get("result"));
             }
             Some(lsp::Pending::Rename { nombre }) => {
                 aplicar_renombre(app, &nombre, msg.get("result"), msg.get("error"));
@@ -1524,6 +1540,156 @@ fn pedir_hover(app: &mut App) {
     }
 }
 
+/// La ayuda de firmas que está a la vista, y de qué buffer y línea habla.
+struct FirmaAbierta {
+    buffer: usize,
+    linea: usize,
+    firma: Firma,
+}
+
+/// Lo que se muestra de una respuesta de `signatureHelp`: la firma activa,
+/// dónde está en ella el parámetro que se está escribiendo (en caracteres),
+/// y cuál de cuántas firmas es (una función puede tener varias).
+#[derive(Debug, PartialEq)]
+struct Firma {
+    etiqueta: String,
+    parametro: Option<(usize, usize)>,
+    indice: usize,
+    total: usize,
+}
+
+/// `automatico`: la pidió una tecla y no el usuario. Ahí, si no hay servidor
+/// o no sabe de firmas, no se dice nada: sería un aviso en cada paréntesis.
+fn pedir_firma(app: &mut App, automatico: bool) {
+    let sin_soporte = app.lsp.is_none() || !app.lsp_firma || app.buffers[app.active].doc_uri.is_none();
+    if sin_soporte {
+        app.firma = None;
+        if !automatico {
+            app.buffers[app.active].ed.status = if app.lsp.is_none() {
+                "La ayuda de firmas necesita un servidor de lenguaje, y este archivo no tiene".to_string()
+            } else {
+                "El servidor de lenguaje no sabe mostrar firmas".to_string()
+            };
+        }
+        return;
+    }
+    let Some((uri, linea, col)) = preparar_peticion(app, "La ayuda de firmas") else {
+        return;
+    };
+    let activo = app.active;
+    let enviado = app
+        .lsp
+        .as_mut()
+        .map(|c| c.request_signature_help(&uri, linea, col, activo))
+        .transpose();
+    if let Err(e) = enviado {
+        app.buffers[app.active].ed.status = format!("No pude preguntarle al servidor: {e}");
+    }
+}
+
+fn aplicar_firma(app: &mut App, buffer: usize, linea: usize, result: Option<&Value>) {
+    let ed = &app.buffers[app.active].ed;
+    if app.active != buffer || ed.cursor.line != linea {
+        return;
+    }
+    // Sin firmas: el cursor ya no está en una llamada. Se cierra.
+    app.firma = result
+        .and_then(firma_de)
+        .map(|firma| FirmaAbierta { buffer, linea, firma });
+}
+
+/// La ayuda habla de la línea donde se pidió: si el cursor se fue, o se
+/// cambió de pestaña, o se abrió algo que no es escribir, se cierra.
+fn cerrar_firma_si_corresponde(app: &mut App) {
+    let Some(f) = &app.firma else { return };
+    let ed = &app.buffers[app.active].ed;
+    let sigue = f.buffer == app.active
+        && f.linea == ed.cursor.line
+        && matches!(ed.mode, Mode::Editing | Mode::Completion { .. })
+        && !ed.preview;
+    if !sigue {
+        app.firma = None;
+    }
+}
+
+fn firma_de(result: &Value) -> Option<Firma> {
+    let firmas = result.get("signatures")?.as_array()?;
+    if firmas.is_empty() {
+        return None;
+    }
+    let indice = result.get("activeSignature").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let indice = if indice < firmas.len() { indice } else { 0 };
+    let firma = &firmas[indice];
+    let etiqueta = firma.get("label")?.as_str()?.to_string();
+    // El de la firma gana sobre el general. Ausente vale 0; `null` quiere
+    // decir que no hay parámetro activo.
+    let activo = match firma.get("activeParameter").or_else(|| result.get("activeParameter")) {
+        Some(v) => v.as_u64(),
+        None => Some(0),
+    };
+    let parametro = activo.and_then(|i| {
+        let parametros = firma.get("parameters")?.as_array()?;
+        // Fuera de rango, el spec dice que vale el primero.
+        let p = parametros.get(i as usize).or_else(|| parametros.first())?;
+        rango_de_parametro(&etiqueta, p.get("label")?)
+    });
+    Some(Firma { etiqueta, parametro, indice, total: firmas.len() })
+}
+
+/// Dónde está un parámetro dentro de la firma, en caracteres. El servidor lo
+/// dice de dos formas: con el texto del parámetro (se busca después del
+/// primer paréntesis, para no confundirlo con el nombre de la función) o con
+/// un par de posiciones en UTF-16.
+fn rango_de_parametro(etiqueta: &str, label: &Value) -> Option<(usize, usize)> {
+    match label {
+        Value::String(texto) if !texto.is_empty() => {
+            let desde = etiqueta.find('(').map_or(0, |i| i + 1);
+            let byte = etiqueta[desde..].find(texto.as_str())? + desde;
+            let inicio = etiqueta[..byte].chars().count();
+            Some((inicio, inicio + texto.chars().count()))
+        }
+        Value::Array(par) => {
+            let a = par.first()?.as_u64()? as usize;
+            let b = par.get(1)?.as_u64()? as usize;
+            let (mut inicio, mut fin) = (None, None);
+            let mut unidades = 0;
+            for (i, c) in etiqueta.chars().chain(std::iter::once('\0')).enumerate() {
+                if unidades == a {
+                    inicio = Some(i);
+                }
+                if unidades == b {
+                    fin = Some(i);
+                }
+                unidades += c.len_utf16();
+            }
+            Some((inicio?, fin?)).filter(|(i, f)| i < f)
+        }
+        _ => None,
+    }
+}
+
+fn linea_de_firma(firma: &Firma, theme: &theme::Theme) -> ratatui::text::Line<'static> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::Span;
+    let normal = Style::default().fg(theme.text_fg);
+    let chars: Vec<char> = firma.etiqueta.chars().collect();
+    let (a, b) = firma.parametro.unwrap_or((chars.len(), chars.len()));
+    let tramo = |desde: usize, hasta: usize| chars[desde..hasta].iter().collect::<String>();
+    let mut spans = vec![
+        Span::styled(format!(" {}", tramo(0, a)), normal),
+        Span::styled(tramo(a, b), normal.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+        Span::styled(tramo(b, chars.len()), normal),
+    ];
+    if firma.total > 1 {
+        spans.push(Span::styled(
+            format!("  ({}/{})", firma.indice + 1, firma.total),
+            Style::default().fg(theme.dim),
+        ));
+    }
+    spans.push(Span::raw(" "));
+    ratatui::text::Line::from(spans)
+}
+
 /// El texto de una respuesta de hover y si es Markdown. El protocolo admite
 /// tres formas para `contents`: `MarkupContent` (`{kind, value}`, la
 /// actual), y las dos viejas, `MarkedString` suelto (un string Markdown o
@@ -2005,6 +2171,15 @@ fn dispatch_action(app: &mut App, action: Action, page_size: usize) {
     let was_select_line = matches!(action, Action::SelectLine);
     execute_action(app, action, page_size);
     app.last_was_select_line = was_select_line;
+    // `(` y `,` abren la ayuda de firmas (o pasan al parámetro siguiente).
+    // Con la ayuda abierta, cada tecla la vuelve a pedir: así sigue al
+    // parámetro activo, y se cierra cuando el servidor contesta que el
+    // cursor ya no está en ninguna llamada.
+    let abre = matches!(action, Action::InsertChar('(' | ','));
+    let edita = matches!(action, Action::InsertChar(_) | Action::Backspace | Action::DeleteForward);
+    if abre || (edita && app.firma.is_some()) {
+        pedir_firma(app, true);
+    }
 }
 
 /// Empieza a grabar, o cierra la grabación en curso y la deja lista para
@@ -2191,7 +2366,12 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         Action::InsertAt(at) => enter_insert(app, at),
         Action::OpenBelow => normal_open_below(app),
         Action::OpenAbove => normal_open_above(app),
-        Action::EscapeKey => handle_escape(app),
+        Action::EscapeKey => {
+            // Con la ayuda de firmas abierta, Esc la cierra y nada más.
+            if app.firma.take().is_none() {
+                handle_escape(app);
+            }
+        }
         Action::OpenFilePrompt => {
             app.buffers[app.active].ed.mode = Mode::Prompt {
                 kind: PromptKind::OpenFile,
@@ -2243,6 +2423,7 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         }
         Action::GotoDefinition => goto_definition(app),
         Action::Hover => pedir_hover(app),
+        Action::SignatureHelp => pedir_firma(app, false),
         Action::JumpBack => saltar_en_la_lista(app, true),
         Action::JumpForward => saltar_en_la_lista(app, false),
         Action::RenamePrompt => rename_prompt(app),
@@ -4167,6 +4348,51 @@ mod tests_lsp_definicion_y_renombre {
         let b = json!({"capabilities": {"definitionProvider": false}});
         let c = Capacidades::de(&b);
         assert!(!c.definition && !c.rename && !c.hover);
+    }
+
+    #[test]
+    fn entiende_las_formas_de_contestar_una_firma() {
+        // rust-analyzer: parámetros como posiciones UTF-16 y activeParameter
+        // en la respuesta.
+        let r = json!({
+            "signatures": [{
+                "label": "fn push(&mut self, value: T)",
+                "parameters": [{"label": [8, 17]}, {"label": [19, 27]}]
+            }],
+            "activeSignature": 0,
+            "activeParameter": 1
+        });
+        let f = firma_de(&r).unwrap();
+        assert_eq!(&f.etiqueta.chars().collect::<Vec<_>>()[19..27].iter().collect::<String>(), "value: T");
+        assert_eq!(f.parametro, Some((19, 27)));
+        assert_eq!((f.indice, f.total), (0, 1));
+
+        // pylsp: parámetros como texto, que se busca después del paréntesis
+        // aunque el nombre de la función lo contenga.
+        let r = json!({
+            "signatures": [
+                {"label": "a(x)", "parameters": [{"label": "x"}]},
+                {"label": "x(a, x)", "parameters": [{"label": "a"}, {"label": "x"}], "activeParameter": 1}
+            ],
+            "activeSignature": 1
+        });
+        let f = firma_de(&r).unwrap();
+        assert_eq!(f.parametro, Some((5, 6)));
+        assert_eq!((f.indice, f.total), (1, 2));
+
+        // Sin activeParameter vale el primero; con null, ninguno.
+        let sin = json!({"signatures": [{"label": "f(a, b)", "parameters": [{"label": "a"}, {"label": "b"}]}]});
+        assert_eq!(firma_de(&sin).unwrap().parametro, Some((2, 3)));
+        let nulo = json!({"signatures": [{"label": "f(a)", "parameters": [{"label": "a"}], "activeParameter": null}]});
+        assert_eq!(firma_de(&nulo).unwrap().parametro, None);
+
+        // Posiciones UTF-16 con un emoji antes: 2 unidades, 1 carácter.
+        let emoji = json!({"signatures": [{"label": "f(😀, b)", "parameters": [{"label": [2, 4]}, {"label": [6, 7]}], "activeParameter": 1}]});
+        assert_eq!(firma_de(&emoji).unwrap().parametro, Some((5, 6)));
+
+        // Sin firmas: el cursor salió de la llamada.
+        assert_eq!(firma_de(&json!({"signatures": []})), None);
+        assert_eq!(firma_de(&json!(null)), None);
     }
 
     #[test]

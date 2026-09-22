@@ -14,13 +14,11 @@ Medianos:
    - correr algo ante un evento (guardar, abrir), no solo por comando.
 
 Chicos:
-4. Ayuda de firmas (signatureHelp) mientras se escribe una llamada. Puede
-   reusar la ventana del hover.
-5. Búsqueda en el proyecto: falta regex y reemplazar en todos los archivos.
-6. En la próxima release, comprobar que el .deb del runner es idéntico a
+4. Búsqueda en el proyecto: falta regex y reemplazar en todos los archivos.
+5. En la próxima release, comprobar que el .deb del runner es idéntico a
    uno armado con packaging/build-deb.sh dentro de Ubuntu 24.04. En local
    ya da lo mismo en rutas distintas; entre máquinas falta verlo.
-7. Binario para Linux aarch64. Necesita un runner ARM.
+6. Binario para Linux aarch64. Necesita un runner ARM.
 
 Por decidir:
 - Si el CI corre `cargo fmt --check`. Nadie comprobó si el código pasa

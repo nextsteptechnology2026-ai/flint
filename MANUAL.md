@@ -555,6 +555,22 @@ formateado y con el código resaltado con el mismo tree-sitter del editor.
 Como definición y renombre, necesita un servidor que anuncie que sabe hacerlo
 (`hoverProvider`); rust-analyzer y pylsp lo hacen.
 
+## Ayuda de firmas (LSP)
+
+Al escribir `(` o `,` dentro de una llamada, arriba de la línea aparece la
+firma de la función con el parámetro que toca escribir en negrita y
+subrayado. Si la función tiene varias firmas, al final dice cuál es ("2/3").
+
+- No interrumpe: se sigue escribiendo con ella a la vista, y se actualiza con
+  cada tecla.
+- Se cierra sola al cerrar la llamada, al salir de la línea o al cambiar de
+  pestaña. `Esc` también la cierra.
+- Para abrirla a mano en una llamada ya escrita: "Parámetros de la llamada"
+  en la paleta, o atar `signature_help` a una tecla en `[keys]`.
+
+Necesita un servidor que anuncie `signatureHelpProvider`; rust-analyzer y
+pylsp lo hacen.
+
 ## Formatear (`Alt+Shift+F`, LSP)
 
 `Alt+Shift+F` (o `=` en la capa modal, o "Formatear el archivo" en la paleta)

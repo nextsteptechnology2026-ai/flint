@@ -96,6 +96,8 @@ pub struct FrameData<'a> {
     pub preview: Option<&'a [Line<'static>]>,
     /// El contenido del hover ya dibujado, cuando el modo es `Hover`.
     pub hover: &'a [Line<'static>],
+    /// La ayuda de firmas, si está abierta: una línea.
+    pub firma: Option<&'a Line<'static>>,
 }
 
 pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> DrawAreas {
@@ -106,6 +108,7 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
         active_tab,
         preview,
         hover,
+        firma,
     } = *data;
     let size = f.area();
     let show_tabs = tab_labels.len() > 1;
@@ -158,6 +161,9 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
     }
     if let Mode::Hover { offset } = &mut ed.mode {
         *offset = draw_hover_popup(f, text_area, cursor, hover, *offset, theme);
+    }
+    if let (Some(linea), Some(cursor)) = (firma, cursor) {
+        draw_firma_popup(f, text_area, cursor, linea, theme);
     }
 
     DrawAreas { text_area, tabs_area }
@@ -441,6 +447,29 @@ fn draw_hover_popup(
     // Devuelve el desplazamiento ya recortado: bajar de más con las flechas
     // no deja la ventana vacía, y subir después responde de inmediato.
     offset
+}
+
+/// Dónde va la ayuda de firmas: arriba de la línea del cursor, para no tapar
+/// la lista de autocompletado ni lo que sigue; abajo si arriba no entra.
+fn area_de_firma(text_area: Rect, (cx, cy): (u16, u16), ancho: u16) -> Rect {
+    let ancho = ancho.min(text_area.width);
+    let y = if cy >= text_area.y + 3 { cy - 3 } else { cy + 1 };
+    let x = cx.min(text_area.x + text_area.width - ancho).max(text_area.x);
+    Rect { x, y, width: ancho, height: 3 }.intersection(text_area)
+}
+
+fn draw_firma_popup(f: &mut Frame, text_area: Rect, cursor: (u16, u16), linea: &Line<'static>, theme: &Theme) {
+    let area = area_de_firma(text_area, cursor, linea.width() as u16 + 2);
+    if area.height < 3 {
+        return;
+    }
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.popup_bg).fg(theme.dim));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(linea.clone()), inner);
 }
 
 /// La paleta de comandos se ancla arriba del área de texto (como en la
@@ -1227,6 +1256,15 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn la_firma_va_arriba_del_cursor_si_entra_y_si_no_abajo() {
+        let texto = Rect { x: 0, y: 1, width: 80, height: 20 };
+        assert_eq!(area_de_firma(texto, (10, 10), 30), Rect { x: 10, y: 7, width: 30, height: 3 });
+        assert_eq!(area_de_firma(texto, (10, 2), 30), Rect { x: 10, y: 3, width: 30, height: 3 });
+        // Pegada al borde derecho, se corre a la izquierda.
+        assert_eq!(area_de_firma(texto, (70, 10), 30).x, 50);
     }
 
     #[test]

@@ -75,6 +75,8 @@ pub enum Action {
     SearchProjectPrompt,
     /// Mostrar el tipo y la documentación de lo que está bajo el cursor (LSP).
     Hover,
+    /// Mostrar los parámetros de la llamada que se está escribiendo (LSP).
+    SignatureHelp,
     /// Volver a donde se estaba antes del último salto.
     JumpBack,
     /// Rehacer un salto después de haber vuelto.
@@ -488,6 +490,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("find_file", FindFilePrompt),
         ("search_project", SearchProjectPrompt),
         ("hover", Hover),
+        ("signature_help", SignatureHelp),
         ("jump_back", JumpBack),
         ("jump_forward", JumpForward),
         ("format", Format),
