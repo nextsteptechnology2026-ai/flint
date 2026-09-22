@@ -4565,3 +4565,294 @@ mod tests_lsp_definicion_y_renombre {
         assert_eq!(textos, vec!["abcd", "efgh", "ij", "cort"]);
     }
 }
+
+#[cfg(test)]
+mod tests_lsp_de_punta_a_punta {
+    //! El cliente LSP entero, contra un servidor de verdad por stdio: el de
+    //! mentira de `examples/lsp_falso.rs`, que `cargo test` compila solo.
+    //! Cada test arranca su propio servidor sobre su propio archivo y maneja
+    //! Flint con las mismas funciones que usa el teclado.
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Prueba {
+        app: App,
+        espejo: PathBuf,
+        dir: PathBuf,
+    }
+
+    impl Drop for Prueba {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// `target/debug/examples/lsp_falso`, al lado del directorio del
+    /// ejecutable de los tests (`target/debug/deps/`).
+    fn servidor_falso() -> PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        let debug = exe.parent().unwrap().parent().unwrap();
+        let ruta = debug.join("examples").join("lsp_falso");
+        assert!(ruta.exists(), "falta {}; lo compila `cargo test`", ruta.display());
+        ruta
+    }
+
+    fn abrir(texto: &str) -> Prueba {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "flint-lsp-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let archivo = dir.join("a.rs");
+        std::fs::write(&archivo, texto).unwrap();
+        let espejo = dir.join("espejo.txt");
+
+        let mut buffer = Buffer::open(Some(archivo.clone())).unwrap();
+        let mut client = lsp::LspClient::spawn(
+            servidor_falso().to_str().unwrap(),
+            &[espejo.display().to_string()],
+        )
+        .unwrap();
+        let uri = lsp::file_uri(&archivo);
+        let root = lsp::file_uri(&dir);
+        let (ok, caps) = finish_init(&mut client, &mut buffer.ed, &uri, &root, "rust", "lsp_falso");
+        assert!(ok, "no inició: {}", buffer.ed.status);
+        buffer.doc_uri = Some(uri);
+        buffer.lsp_lang_id = Some("rust");
+
+        let app = App {
+            buffers: vec![buffer],
+            active: 0,
+            text_area: Rect { x: 0, y: 1, width: 80, height: 20 },
+            tabs_area: None,
+            lsp: Some(client),
+            lsp_lang: Some("rust"),
+            lsp_incremental: caps.incremental,
+            lsp_definition: caps.definition,
+            lsp_rename: caps.rename,
+            lsp_hover: caps.hover,
+            lsp_format: caps.format,
+            lsp_firma: caps.firma,
+            firma: None,
+            lsp_forzar_sync: false,
+            last_was_select_line: false,
+            keymap: keymap::flint_profile(),
+            pending_prefix: None,
+            palette_entries: builtin_palette_entries(),
+            plugin_commands: Vec::new(),
+            plugins: None,
+            plugin_keys: HashMap::new(),
+            theme: theme::Theme::default(),
+            theme_path: None,
+            theme_mtime: None,
+            theme_next_check: Instant::now(),
+            clipboard_mode: clipboard::Mode::Internal,
+            macro_recording: None,
+            macro_last: Vec::new(),
+            file_index: Vec::new(),
+            search_files: Vec::new(),
+            search_root: PathBuf::new(),
+            search_partial: false,
+            search_hits: Vec::new(),
+            saltos: saltos::ListaSaltos::default(),
+            hover_lines: Vec::new(),
+            config: config::Config::default(),
+            clipboard: None,
+            preview_lines: Vec::new(),
+            preview_key: None,
+        };
+        let mut p = Prueba { app, espejo, dir };
+        // El servidor escribe el espejo al recibir el didOpen.
+        esperar(&mut p, "el didOpen", |p| std::fs::read_to_string(&p.espejo).is_ok_and(|t| t == texto));
+        p
+    }
+
+    /// Atiende lo que mande el servidor hasta que `listo` se cumpla, o falla
+    /// a los 5 s diciendo qué se esperaba.
+    fn esperar(p: &mut Prueba, que: &str, listo: impl Fn(&Prueba) -> bool) {
+        let hasta = Instant::now() + Duration::from_secs(5);
+        while !listo(p) {
+            assert!(Instant::now() < hasta, "no llegó {que}; estado: {}", p.app.buffers[0].ed.status);
+            let msg = p.app.lsp.as_ref().and_then(|c| c.recv_timeout(Duration::from_millis(20)));
+            if let Some(msg) = msg {
+                handle_lsp_message(&mut p.app, msg);
+            }
+        }
+    }
+
+    fn tipear(p: &mut Prueba, texto: &str) {
+        for c in texto.chars() {
+            let accion = if c == '\n' { Action::InsertNewline } else { Action::InsertChar(c) };
+            dispatch_action(&mut p.app, accion, 10);
+        }
+    }
+
+    fn tecla(p: &mut Prueba, code: KeyCode) {
+        handle_key(&mut p.app, KeyEvent::new(code, KeyModifiers::NONE), 10);
+    }
+
+    fn texto(p: &Prueba) -> String {
+        p.app.buffers[0].ed.rope.to_string()
+    }
+
+    fn ed(p: &mut Prueba) -> &mut Editor {
+        &mut p.app.buffers[0].ed
+    }
+
+    /// Manda lo pendiente y espera a que la copia del servidor sea igual a
+    /// la del editor.
+    fn sincronizar(p: &mut Prueba) {
+        sync_lsp_ahora(&mut p.app);
+        let esperado = texto(p);
+        esperar(p, "la sincronización", |p| {
+            std::fs::read_to_string(&p.espejo).is_ok_and(|t| t == esperado)
+        });
+    }
+
+    #[test]
+    fn el_servidor_tiene_el_mismo_texto_despues_de_cualquier_edicion() {
+        let mut p = abrir("fn main() {\n    let x = 1;\n}\n");
+        assert!(p.app.lsp_incremental, "el servidor falso anuncia sync incremental");
+
+        // Tipeo con acentos y emoji (dos unidades UTF-16), Enter con
+        // sangría automática, y Backspace.
+        ed(&mut p).cursor = editor::Position { line: 1, col: 14 };
+        tipear(&mut p, " // ñandú 😀 fin\nlet y = 2;");
+        dispatch_action(&mut p.app, Action::Backspace, 10);
+        sincronizar(&mut p);
+
+        // Varios cursores escribiendo a la vez.
+        ed(&mut p).apply_selections(vec![
+            editor::Selection { anchor: editor::Position { line: 0, col: 0 }, cursor: editor::Position { line: 0, col: 0 } },
+            editor::Selection { anchor: editor::Position { line: 1, col: 4 }, cursor: editor::Position { line: 1, col: 4 } },
+        ]);
+        tipear(&mut p, "#");
+        sincronizar(&mut p);
+
+        // Deshacer y rehacer.
+        dispatch_action(&mut p.app, Action::Undo, 10);
+        dispatch_action(&mut p.app, Action::Undo, 10);
+        sincronizar(&mut p);
+        dispatch_action(&mut p.app, Action::Redo, 10);
+        sincronizar(&mut p);
+
+        // Una selección de varias líneas reemplazada por una letra, y un
+        // bloque indentado con Tab.
+        ed(&mut p).apply_selections(vec![editor::Selection {
+            anchor: editor::Position { line: 0, col: 3 },
+            cursor: editor::Position { line: 2, col: 2 },
+        }]);
+        tipear(&mut p, "z");
+        sincronizar(&mut p);
+        ed(&mut p).apply_selections(vec![editor::Selection {
+            anchor: editor::Position { line: 0, col: 0 },
+            cursor: editor::Position { line: 1, col: 0 },
+        }]);
+        dispatch_action(&mut p.app, Action::InsertTab, 10);
+        sincronizar(&mut p);
+    }
+
+    #[test]
+    fn los_diagnosticos_llegan_con_la_columna_en_caracteres() {
+        let mut p = abrir("fn main() {}\n");
+        ed(&mut p).cursor = editor::Position { line: 0, col: 12 };
+        // El emoji ocupa dos unidades UTF-16: sin convertir, el subrayado
+        // quedaría corrido un lugar.
+        tipear(&mut p, " // 😀 ERROR");
+        sync_lsp_ahora(&mut p.app);
+        esperar(&mut p, "el diagnóstico", |p| !p.app.buffers[0].ed.diagnostics.is_empty());
+        let d = &p.app.buffers[0].ed.diagnostics[0];
+        assert_eq!((d.line, d.start_col, d.end_col), (0, 18, 23));
+
+        // Al borrarlo, el servidor manda la lista vacía y se van.
+        for _ in 0..5 {
+            dispatch_action(&mut p.app, Action::Backspace, 10);
+        }
+        sync_lsp_ahora(&mut p.app);
+        esperar(&mut p, "la lista vacía", |p| p.app.buffers[0].ed.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn autocompletar_reemplaza_lo_que_dice_el_servidor() {
+        let mut p = abrir("fn main() {\n    v.puxx;\n}\n");
+        ed(&mut p).cursor = editor::Position { line: 1, col: 8 };
+        dispatch_action(&mut p.app, Action::TriggerCompletion, 10);
+        esperar(&mut p, "la lista", |p| matches!(p.app.buffers[0].ed.mode, Mode::Completion { .. }));
+        tecla(&mut p, KeyCode::Enter);
+        // El rango del servidor abarca "puxx" entero, no solo lo de antes
+        // del cursor.
+        assert_eq!(texto(&p), "fn main() {\n    v.push;\n}\n");
+        sincronizar(&mut p);
+    }
+
+    #[test]
+    fn hover_definicion_y_vuelta_atras() {
+        let mut p = abrir("fn main() {\n    main();\n}\n");
+        ed(&mut p).cursor = editor::Position { line: 1, col: 5 };
+        dispatch_action(&mut p.app, Action::Hover, 10);
+        esperar(&mut p, "el hover", |p| matches!(p.app.buffers[0].ed.mode, Mode::Hover { .. }));
+        let hover: String = p.app.hover_lines.iter().map(|l| l.to_string()).collect();
+        assert!(hover.contains("fn falso()"), "{hover}");
+        tecla(&mut p, KeyCode::Esc);
+
+        dispatch_action(&mut p.app, Action::GotoDefinition, 10);
+        esperar(&mut p, "el salto", |p| p.app.buffers[0].ed.cursor.line == 0);
+        assert_eq!(p.app.buffers[0].ed.cursor, editor::Position { line: 0, col: 3 });
+        dispatch_action(&mut p.app, Action::JumpBack, 10);
+        assert_eq!(p.app.buffers[0].ed.cursor, editor::Position { line: 1, col: 5 });
+    }
+
+    #[test]
+    fn renombrar_cambia_todas_las_apariciones_y_se_deshace_de_una_vez() {
+        let mut p = abrir("fn uno() {}\nfn main() { uno(); uno(); }\n");
+        ed(&mut p).cursor = editor::Position { line: 0, col: 4 };
+        dispatch_action(&mut p.app, Action::RenamePrompt, 10);
+        // El aviso viene con el nombre actual escrito, para editarlo.
+        for _ in 0..3 {
+            tecla(&mut p, KeyCode::Backspace);
+        }
+        for c in "dos".chars() {
+            tecla(&mut p, KeyCode::Char(c));
+        }
+        tecla(&mut p, KeyCode::Enter);
+        esperar(&mut p, "el renombre", |p| p.app.buffers[0].ed.rope.to_string().contains("dos"));
+        assert_eq!(texto(&p), "fn dos() {}\nfn main() { dos(); dos(); }\n");
+        sincronizar(&mut p);
+        dispatch_action(&mut p.app, Action::Undo, 10);
+        assert_eq!(texto(&p), "fn uno() {}\nfn main() { uno(); uno(); }\n");
+        sincronizar(&mut p);
+    }
+
+    #[test]
+    fn la_ayuda_de_firmas_sigue_al_parametro_y_se_cierra_sola() {
+        let mut p = abrir("fn main() {\n    \n}\n");
+        ed(&mut p).cursor = editor::Position { line: 1, col: 4 };
+        let parametro = |p: &Prueba| p.app.firma.as_ref().and_then(|f| f.firma.parametro);
+
+        tipear(&mut p, "suma(");
+        esperar(&mut p, "la firma", |p| parametro(p) == Some((8, 14)));
+        tipear(&mut p, "1,");
+        esperar(&mut p, "el segundo parámetro", |p| parametro(p) == Some((16, 22)));
+        // El cierre automático ya puso el `)`: escribirlo pasa por encima.
+        tipear(&mut p, " 2)");
+        esperar(&mut p, "que se cierre", |p| p.app.firma.is_none());
+        assert_eq!(texto(&p), "fn main() {\n    suma(1, 2)\n}\n");
+
+        // Esc también la cierra.
+        tipear(&mut p, ";\nsuma(");
+        esperar(&mut p, "la firma otra vez", |p| p.app.firma.is_some());
+        dispatch_action(&mut p.app, Action::EscapeKey, 10);
+        assert!(p.app.firma.is_none());
+    }
+
+    #[test]
+    fn formatear_aplica_lo_que_manda_el_servidor() {
+        let mut p = abrir("fn main() {   \n    x();  \n}\n");
+        dispatch_action(&mut p.app, Action::Format, 10);
+        assert_eq!(texto(&p), "fn main() {\n    x();\n}\n");
+        sincronizar(&mut p);
+    }
+}

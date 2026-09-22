@@ -3,18 +3,15 @@ Pendientes de Flint
 Lo terminado no se anota acá: está en el historial de git.
 
 Medianos:
-1. Tests del cliente LSP de punta a punta. Hoy se prueba solo a mano.
-   Hace falta un servidor LSP de mentira que conteste por stdio; el que
-   se usó para probar el formateo sirve de base.
-2. Primer resaltado al abrir un archivo grande: 3 MB tardan ~1,1 s y
+1. Primer resaltado al abrir un archivo grande: 3 MB tardan ~1,1 s y
    mientras tanto el archivo se ve sin color. Solución: resaltar primero
    lo que está en pantalla y el resto después.
-3. API de plugins. Falta:
+2. API de plugins. Falta:
    - definir un lenguaje nuevo con su resaltado;
    - correr algo ante un evento (guardar, abrir), no solo por comando.
 
 Chicos:
-4. Revisar la próxima release, que es la primera con estos cambios:
+3. Revisar la próxima release, que es la primera con estos cambios:
    - que el .deb del runner sea idéntico a uno armado con
      packaging/build-deb.sh dentro de Ubuntu 24.04 (en local ya da lo
      mismo en rutas distintas; entre máquinas falta verlo);
