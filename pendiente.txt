@@ -1,357 +1,42 @@
-Lo que queda por hacer en Flint.
+Pendientes de Flint
 
-Este archivo se reescribió el 2026-09-10, después de cerrar el bloque
-"Paridad con micro" y los dos puntos que quedaban con más valor por hora.
-Cada punto de acá se verificó contra el código antes de anotarlo.
+Lo terminado no se anota acá: está en el historial de git.
 
 Medianos:
-1. Gestor de plugins. Ahora sí tiene sentido preguntárselo: la API alcanza
-   para escribir un plugin útil (ver abajo), así que el día que haya más de
-   un puñado dando vueltas va a hacer falta algo para instalarlos y
-   actualizarlos. Hoy se copian a mano a ~/.config/flint/plugins/.
-   Lo que sigue faltando de la API: definir un lenguaje nuevo con su
-   resaltado, y correr algo en respuesta a un evento (guardar, abrir) en vez
-   de solo cuando el usuario invoca un comando.
-2. Tests: el hueco cambió de lugar. Hoy hay 167 y cubren columnas,
-   indentación (incluida la automática al apretar Enter), comentarios, pares
-   de delimitadores, recorte al guardar, configuración, respaldos, el parseo
-   de las respuestas de autocompletado, el dibujado en una terminal angosta,
-   el resaltado incremental (contra el motor viejo y contra recalcular todo),
-   las diecisiete gramáticas, la API de plugins y el traductor entre lo
-   que manda un servidor LSP y lo que hace Flint (ir a la definición y
-   renombrar), la búsqueda en el proyecto, el hover, la lista de saltos y
-   el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y
-   reemplazar).
-   Sigue sin cubrirse el cliente LSP de punta a punta: se probó a mano
-   contra rust-analyzer y contra pylsp, pero no hay nada automático que lo
-   cuide. Haría falta un servidor LSP de mentira que conteste por stdio.
-3. La *primera* pasada del resaltado, al abrir un archivo, sigue siendo
-   proporcional al tamaño: unos 1,1 s en un archivo de 3 MB, y hasta que
-   termina el archivo se ve sin color. Lo que arregla eso es resaltar
-   primero lo que está en pantalla y el resto después, no un algoritmo
-   mejor. (El recálculo por tecla ya no es un problema: ver abajo.)
+1. Tests del cliente LSP de punta a punta. Hoy se prueba solo a mano.
+   Hace falta un servidor LSP de mentira que conteste por stdio; el que
+   se usó para probar el formateo sirve de base.
+2. Primer resaltado al abrir un archivo grande: 3 MB tardan ~1,1 s y
+   mientras tanto el archivo se ve sin color. Solución: resaltar primero
+   lo que está en pantalla y el resto después.
+3. API de plugins. Falta:
+   - definir un lenguaje nuevo con su resaltado;
+   - correr algo ante un evento (guardar, abrir), no solo por comando.
 
 Chicos:
-4. La compilación no es reproducible bit a bit: el .deb que armó el runner
-   para la v0.1.3 y el construido en local con el mismo código dan sha256
-   distintos (f286f94e… vs e393b718…). Los dos son correctos — cambian el
-   toolchain, las rutas embebidas y las fechas — pero para un proyecto que
-   distribuye binarios, poder reconstruir uno idéntico al publicado es lo que
-   permite a un tercero verificar que el binario sale de ese código y no de
-   otra cosa. Se ataca con SOURCE_DATE_EPOCH, --remap-path-prefix y fijar la
-   versión del toolchain (rust-toolchain.toml).
-5. La auto-indentación no des-indenta sola al escribir el cierre. Si uno
-   escribe la llave de cierre a mano en una línea ya sangrada, queda un nivel
-   de más; hay que sacarlo con Shift+Tab. Lo mismo con `else` y `elif` en
-   Python. Es lo que falta para que la indentación sea completa, y sale del
-   mismo lugar que el resto (par_de + is_in_string_or_comment).
-6. El autocompletado ignora el *rango* de textEdit y usa solo su newText:
-   reemplaza desde donde se abrió el popup hasta el cursor. Coincide con lo
-   que quiere casi todo servidor, pero uno que pida reemplazar más atrás (un
-   import completo, por ejemplo) quedaría mal aplicado.
+4. Al escribir una llave de cierre en una línea sangrada, no se quita un
+   nivel de sangría. Lo mismo con `else` y `elif` en Python.
+5. El autocompletado usa solo textEdit.newText e ignora su rango. Falla
+   con servidores que piden reemplazar texto más atrás del cursor.
+6. Ayuda de firmas (signatureHelp) mientras se escribe una llamada. Puede
+   reusar la ventana del hover.
+7. Búsqueda en el proyecto: falta regex y reemplazar en todos los archivos.
+8. Compilación reproducible: el mismo código da un .deb distinto en local
+   y en GitHub. Se arregla con SOURCE_DATE_EPOCH, --remap-path-prefix y un
+   rust-toolchain.toml.
+9. Binario para Linux aarch64. Necesita un runner ARM.
 
-Afuera a propósito (no son pendientes, son decisiones):
-- Terminal integrada. micro la tiene y es una fuente conocida de bugs; tmux
-  ya resuelve el problema sin meterlo dentro del editor.
-- Paneles divididos, por ahora. Es la única refactorización grande que queda
-  (ui.rs asume un viewport, y el scroll — row_offset, row_sub_offset,
-  col_offset — vive en el Editor, o sea por buffer). Se decidió el 2026-09-10
-  no hacerla: las pestañas cubren tener varios archivos abiertos, y para ver
-  dos a la vez hay dos Flint en dos paneles de tmux, que cuesta cero. Si
-  alguna vez se hace: dos archivos distintos lado a lado saldrían casi gratis
-  porque cada buffer ya trae su propio scroll; lo que obliga a mover ese
-  estado a una struct de vista es el mismo archivo en dos paneles.
-- Gestor de plugins. Sin comunidad no hay nada que gestionar; los tres
-  directorios de carga alcanzan. Lo que sí falta es ancho de API (punto 2).
-- Los ~130 lenguajes de micro. Siguen sin perseguirse uno por uno, pero el
-  2026-09-10 se pasó de cinco gramáticas a diecisiete, eligiendo las de los
-  archivos que la gente abre todos los días. Diecisiete con árbol de verdad
-  valen más que ciento treinta con expresiones regulares. Costo: el binario
-  pasó de 7,7 MB a 17 MB, que es el orden del de micro. Agregar uno más es
-  una fila de la tabla `LENGUAJES` en highlight.rs y una variante de `Lang`,
-  y hay tests que avisan si la consulta no compila contra su gramática o si
-  no captura nada.
-- Leer el portapapeles por OSC 52. El estándar lo define, pero las terminales
-  lo tienen apagado (dejaría que un programa remoto lea lo que copiaste) y la
-  respuesta llegaría mezclada con las teclas. Pegar usa el registro interno
-  cuando no hay portapapeles del sistema, y eso se documenta.
+Por decidir:
+- Si el CI corre `cargo fmt --check`. Nadie comprobó si el código pasa
+  rustfmt; activarlo sin revisar puede obligar a reformatear todo.
 
-Donde Flint ya está arriba de micro: el buffer en rope aguanta archivos
-grandes mejor que las líneas en memoria de micro, el cliente LSP es nativo y
-no un plugin de terceros, los delimitadores se cuentan salteando cadenas y
-comentarios porque hay un árbol de verdad detrás, y la capa modal opcional
-con selección estructural no tiene equivalente ahí.
-
-Formatear y formatear al guardar — cerrado el 2026-09-13:
-- textDocument/formatting (Alt+Shift+F, = en NORMAL, "format"), pedido solo
-  si el servidor anuncia documentFormattingProvider. format_on_save en
-  [options] y por archivo, apagado por defecto.
-- Al guardar se espera la respuesta en el momento, hasta 2 s
-  (ESPERA_FORMATO); pasado eso se guarda sin formatear y se avisa. Mientras
-  espera, los otros mensajes del servidor pasan por handle_lsp_message en
-  vez de tirarse (esperar_respuesta). Una respuesta que llega tarde
-  encuentra su Pending::Format y se ignora.
-- `null` no dice por qué: rust-analyzer lo manda tanto si el archivo ya
-  está formateado como si no pudo correr rustfmt (sin instalar, o con un
-  error de sintaxis). La barra dice "el servidor no propuso cambios", sin
-  afirmar ninguna de las dos. Así se descubrió que en esta máquina faltaba
-  rustfmt.
-- ContentModified (-32801) y RequestCancelled (-32800) se reintentan dentro
-  de los mismos 2 s: rust-analyzer los contesta cuando recibe el texto nuevo
-  justo antes del pedido, que es lo que pasa al guardar con formato dos
-  veces seguidas. El protocolo pide que el cliente reintente.
-- Probado a mano en tmux con un servidor LSP de mentira en Python (formatea
-  de verdad, y tiene modos lento, error y nulo): formatea y guarda en ~15 ms
-  sin perder el diagnóstico que llega mientras espera, Ctrl+Z deshace el
-  formato entero, el modo lento guarda sin formatear a los 2 s justos, error
-  y nulo guardan y explican, y Alt+Shift+F formatea sin guardar. Contra
-  rust-analyzer real, con rustfmt instalado: cinco guardados seguidos con
-  código desprolijo, los cinco formateados (182 ms el primero, ~15 ms los
-  demás); antes del reintento, el segundo fallaba con "content modified".
-- Ese servidor de mentira es la base natural para los tests del LSP de
-  punta a punta (punto 2).
-
-Tests del ciclo de edición — cerrado el 2026-09-13:
-- 30 tests nuevos en editor.rs (tests_ciclo_de_edicion): agrupación de
-  deshacer por ráfagas y por tipo de edición, rehacer, que una edición nueva
-  borre el rehacer, tope de la pila, cursores restaurados al deshacer,
-  multi-cursor escribiendo, borrando y uniendo líneas, siguiente aparición
-  con vuelta al archivo, Shift con varios cursores, buscar y reemplazar
-  literal y con regex, y qué le llega al servidor LSP en cada caso.
-- Encontraron tres errores reales, corregidos:
-  1. Dos cursores que terminaban en el mismo lugar seguían siendo dos: la
-     letra siguiente se escribía dos veces. Ahora se funden.
-  2. Selecciones que se pisaban (una selección y un cursor adentro de ella,
-     o dos que se cruzaron al extenderlas) borraban de más: el segundo
-     borrado usaba índices que el primero ya había corrido. Ahora se
-     aplica una sola edición sobre la unión (fundir_ediciones).
-  3. En buscar y reemplazar con regex, `^` y `$` eran el principio y el fin
-     del archivo, no de cada línea, aunque el comentario del código decía
-     lo contrario. Se compilan en modo multilínea.
-- El 1 se comprobó además a mano en tmux: "aab", Ctrl+D sobre las dos "a",
-  Backspace y "X" deja "Xb" (antes "XXb").
-
-Hover y lista de saltos — cerrado el 2026-09-13:
-- Hover (F1, K en NORMAL, "hover"): textDocument/hover, pedido solo si el
-  servidor anuncia hoverProvider. Entiende MarkupContent y las dos formas
-  viejas (MarkedString y lista). El Markdown pasa por markdown::render, el
-  mismo de la vista previa, así que el código sale resaltado; se le recortan
-  los espacios de relleno para que la ventana mida lo que mide el texto.
-  La respuesta se descarta si el cursor se movió mientras tanto.
-- La ventana nunca tapa la línea del cursor: abajo si entra, arriba si no, y
-  si no entra de ningún lado, del lado con más lugar y más baja. El
-  desplazamiento lo recorta el dibujado, que es quien sabe cuántas líneas
-  entraron.
-- Lista de saltos (Alt+←/Alt+→, "jump_back"/"jump_forward", src/saltos.rs):
-  por ruta canónica y no por índice de buffer, así sobrevive a cerrar
-  pestañas y reabre el archivo. Anotan: ir a la definición (desde el lugar
-  donde se pidió, no donde está el cursor al llegar la respuesta), búsqueda
-  en el proyecto, ir a línea y siguiente diagnóstico. Tope de 100.
-- Para eso KeyChord aprendió Alt: antes se ignoraba y "alt+x" en [keys] daba
-  error. Alt sobre una letra sin atar sigue escribiendo la letra.
-- Probado a mano en tmux contra rust-analyzer: hover de Vec::push y de
-  PathBuf (86 líneas, desplazado hasta el final y de vuelta), definición →
-  Alt+← → Alt+→ en el mismo archivo, y entre archivos cerrando la pestaña de
-  destino y volviendo a avanzar (la reabre).
-- Queda: signatureHelp (la ayuda de firmas mientras se escribe la llamada)
-  saldría casi entera de acá, con la misma ventana.
-
-Buscar texto en el proyecto — cerrado el 2026-09-13:
-- Ctrl+N (Ctrl+Shift+F llega igual que Ctrl+F en una terminal tradicional),
-  "search_project" en [keys] y en la paleta. Busca mientras se escribe:
-  el proyecto se lee a memoria al abrir el buscador (src/busqueda.rs) y
-  cada tecla busca sobre esa copia. Smartcase, literal, una coincidencia
-  por línea, y en los buffers abiertos se busca lo que tiene el editor,
-  cambios sin guardar incluidos.
-- Topes: 1 MB por archivo, 32 MB en total (se avisa si no entró entero) y
-  1.000 coincidencias. Medido sobre el registro de cargo (14.570 archivos,
-  llega al tope de 32 MB), con el binario de debug: 371 ms en abrir y
-  ~50 ms por tecla en el peor caso, una consulta que no aparece en ningún
-  lado.
-- De paso: el popup de la paleta y del buscador de archivos no seguía a la
-  selección más allá del décimo renglón. Ahora se desplaza.
-- Probado a mano en tmux: salto a otro archivo en una pestaña nueva a la
-  línea y columna exactas, y una palabra escrita sin guardar aparece.
-- Falta: regex (el motor ya está, por Ctrl+R con regex) y reemplazar en
-  todo el proyecto.
-
-Ir a la definición y renombrar — cerrado el 2026-09-10:
-- textDocument/definition y textDocument/rename, atados a Ctrl+] o F12 y a
-  F6, más `D` y `r` en la capa modal, más la paleta. Probados de punta a
-  punta contra rust-analyzer real sobre un proyecto Cargo: el salto cae en la
-  línea correcta y el renombre cambió las tres ocurrencias y quedó bien en
-  disco después de guardar.
-- Se leen las capacidades del servidor (definitionProvider, renameProvider)
-  en vez de pedir a ciegas: mandar una petición que el servidor no atiende
-  deja al usuario esperando una respuesta que no llega.
-- Antes de cada petición se fuerza la sincronización, sin esperar el margen
-  de 500 ms. Con la versión vieja del archivo, el salto cae donde estaba el
-  símbolo hace un rato.
-- El renombre abre los archivos que toca y los deja sin guardar, para que se
-  puedan revisar. Tope de 50 archivos, y si el servidor pide además crear o
-  borrar archivos se corta antes de tocar nada. Un Ctrl+Z deshace el
-  renombre entero de un archivo.
-- Descubierto de paso: una terminal en modo tradicional no puede distinguir
-  Ctrl+] de Ctrl+5 (mismo byte, 0x1D), y lo mismo con Ctrl+\, Ctrl+^ y
-  Ctrl+_. La tecla por defecto estaba atada a algo que nunca iba a llegar.
-  Ahora parse_chord normaliza las cuatro a la forma que manda la terminal.
-
-Diecisiete lenguajes, API de plugins y distribución — cerrado el 2026-09-10:
-- De cinco gramáticas a diecisiete: se sumaron Shell, C, C++, CSS, Go, HTML,
-  Java, JavaScript, Lua, TypeScript, TSX y YAML. Todo lo que Flint sabe de un
-  lenguaje vive ahora en una tabla (LENGUAJES, en highlight.rs) en vez de
-  repartido en ocho `match`: agregar uno es una fila y una variante de `Lang`.
-  Hay tests que avisan si la tabla se desalinea del enum, si una consulta no
-  compila contra su gramática, o si no captura nada.
-- Dos consultas resultaron ser deltas y sin su base no capturaban casi nada:
-  la de C++ se apoya en la de C y la de TypeScript en la de JavaScript. Van
-  concatenadas, la específica al final, porque manda la última captura.
-- El lenguaje se decide por nombre completo de archivo (.bashrc), extensión y
-  shebang, en ese orden.
-- API de plugins de verdad. Además de registrar comandos, un script puede
-  leer el archivo, el lenguaje, el cursor, una línea, el texto entero, la
-  selección y el portapapeles; y pedir insertar, reemplazar la selección,
-  copiar, mover el cursor, y ejecutar cualquier acción de Flint por nombre
-  (flint.action). También puede atar sus propias teclas (flint.bind), en la
-  capa directa o en la modal, y se consultan antes que el perfil para que un
-  plugin pueda pisar un atajo existente a propósito.
-- El modelo es leer-y-pedir: el script ve una foto del editor y lo que pide
-  se aplica cuando terminó. Si falla a la mitad no se aplica nada, en vez de
-  dejar el buffer a medio camino.
-- De paso aparecieron las teclas de función (f1..f12), que no existían ni
-  para [keys] del config.toml. F2 sigue sin poder reasignarse: es el
-  interruptor de la capa modal.
-- Inyecciones: un archivo puede tener tramos de otro lenguaje y se colorean
-  con la gramática que les toca (el <style> de un HTML como CSS, el <script>
-  como JavaScript, el cerco de un Markdown como el lenguaje que declara).
-  Sale de la consulta de inyecciones de cada gramática, así que una gramática
-  nueva que traiga la suya funciona sola. De paso, la segunda pasada de
-  Markdown, que estaba escrita a mano, pasó a ser una inyección más.
-- Auditoría de capturas: varias gramáticas usaban nombres que Flint no
-  reconocía, y el efecto no era "esa captura no pinta" sino "el nodo se queda
-  sin color", porque manda la última captura que lo toca. Lua se veía casi en
-  blanco y negro (sus if/for/while salen como `conditional` y `repeat`), y
-  las etiquetas de HTML y CSS tampoco tenían color. Hay un test que ahora
-  falla si una gramática usa una captura que no se traduce a nada, salvo que
-  esté en CAPTURAS_IGNORADAS a propósito.
-- Distribución: instalador de una línea (packaging/install.sh, probado de
-  punta a punta contra la release v0.1.5 real), fórmula de Homebrew que se
-  genera sola en cada release con los sha256 recién calculados
-  (packaging/homebrew-formula.sh), y el workflow de release pasó a una
-  matriz que compila y prueba en Linux x86_64, macOS Intel y macOS Apple
-  Silicon. Falta todavía Linux aarch64, que necesita un runner ARM.
-
-Resaltado incremental — lo que se cerró el 2026-09-10:
-- El resaltado reusa el árbol de tree-sitter de la pasada anterior en vez de
-  reanalizar el documento. La edición sale de comparar prefijo y sufijo
-  comunes entre el rope de antes y el de ahora, no de anotar un InputEdit en
-  cada lugar que muta el buffer: así no hay forma de que deshacer, el
-  multi-cursor o reemplazar-todo desincronicen el árbol en silencio, que es
-  justo el riesgo por el que esto estaba postergado. A lo sumo describe un
-  tramo más grande del que cambió, y eso solo cuesta un poco más de reparseo.
-- La consulta de resaltado también se acotó: se vuelve a consultar solo el
-  tramo que `Tree::changed_ranges` marca, redondeado a líneas enteras, y las
-  líneas que no se tocaron conservan lo que ya tenían (se corren de número
-  con un splice). Los cambios a distancia —abrir un `/*`— siguen andando
-  porque el tramo lo decide el árbol.
-- Medido, por tecla en un archivo Rust: 101 KB pasó de 57 ms a 0,38 ms;
-  813 KB de 309 ms a 0,91 ms; 3 MB de 1,16 s a 3,5 ms.
-- Se eliminó HIGHLIGHT_DEBOUNCE: los colores se actualizan mientras se
-  escribe, sin esperar a que la ráfaga de tipeo termine.
-- La selección estructural (`n`) usa el árbol que el resaltado ya tiene en
-  caché en vez de volcar el buffer a un String y analizarlo de nuevo.
-- Para esto hubo que dejar de usar `tree-sitter-highlight`, que no acepta un
-  árbol viejo: la consulta se recorre a mano. El motor viejo quedó como
-  dependencia *de desarrollo* y como oráculo de las pruebas
-  (`tests_oraculo`), que comparan las dos salidas sobre archivos del propio
-  repo para que el cambio no altere ni un color. Reproducir su semántica
-  exacta tuvo dos vueltas: manda la *última* captura de cada nodo (si esa no
-  está en CAPTURE_NAMES el nodo no se colorea, aunque una anterior sí
-  estuviera), y entre capturas que empiezan en el mismo byte manda el orden
-  de los patrones, no el tamaño del nodo.
-- `tests_incremental` compara, después de cada edición, el resaltado
-  incremental contra uno hecho desde cero: tipeo letra por letra, borrar y
-  pegar bloques enteros, abrir comentarios y comillas, editar adentro de un
-  párrafo de Markdown, y acentos y emoji (donde el prefijo común puede caer
-  en la mitad de un carácter).
-
-Paridad con micro — lo que se cerró el 2026-09-10:
-- Auto-indentación de verdad al apretar Enter: hereda la sangría, suma un
-  nivel adentro de un delimitador sin cerrar, y baja el cierre a su propia
-  línea si estaba pegado al cursor. En Python los dos puntos abren bloque.
-  Los delimitadores dentro de cadenas y comentarios no cuentan.
-- Probado un servidor LSP que no es rust-analyzer: pylsp sobre Python, con
-  arranque, sync incremental anunciado, diagnósticos (hacen falta los
-  linters: pipx inject python-lsp-server pyflakes pycodestyle) y
-  autocompletado de jedi aceptado desde la lista. De paso se arregló que el
-  texto a insertar ahora sale de textEdit.newText antes que de insertText,
-  que es lo que dice el spec y lo que manda rust-analyzer.
-- Archivo de configuración (src/config.rs, ~/.config/flint/config.toml) con
-  [options], overrides por patrón de archivo ([files."*.py"]), [keys] y
-  [modal_keys] para remapear teclas por nombre de acción, y [lsp] para el
-  comando de cada servidor. Banderas --config y --actions.
-- Tabuladores contra espacios (indent_with_spaces), por archivo.
-- Recorte de espacios al final de línea al guardar (trim_trailing_whitespace).
-- Portapapeles por OSC 52 cuando no hay servidor gráfico (src/clipboard.rs),
-  con modos auto/system/terminal/internal. Base64 propio, sin dependencia.
-- Macros: Ctrl+U graba y termina, Ctrl+B repite. Graba también lo tipeado,
-  porque ahora *toda* tecla pasa por el despachador (Action::InsertChar).
-- Cierre automático de pares, salto al par (m en NORMAL) y resaltado de las
-  dos puntas, salteando los que están dentro de cadenas y comentarios.
-- Comentar/descomentar el bloque con el token del lenguaje (Ctrl+K).
-- Ir a la línea (paleta) y buscador difuso de archivos del proyecto (Ctrl+T),
-  con la raíz detectada por .git/Cargo.toml/package.json/pyproject.toml/
-  go.mod/Makefile.
-- Detección del tipo de archivo por shebang cuando no hay extensión.
-- Aviso antes de pisar un archivo que otro proceso cambió en el disco, y
-  respaldo automático cada 8 s en ~/.local/share/flint/backups/ (se borra al
-  guardar y al cerrar el buffer).
-- Bug arreglado de paso: los popups de autocompletado y de la paleta entraban
-  en pánico en una terminal más angosta que su ancho mínimo (clamp con
-  min > max). Hay un test que dibuja a 1, 8, 14 y 30 columnas.
-
-Hecho desde la versión anterior de este archivo (no volver a anotarlo):
-- Empaquetado .deb (packaging/build-deb.sh).
-- Sincronización LSP incremental, con deltas en vez del documento completo.
-- El autocompletado filtra por lo tipeado y reemplaza ese prefijo al aceptar.
-- Los diagnósticos subrayan el rango exacto de columnas del servidor.
-- select_word usa límites de palabra Unicode reales (split_word_bounds).
-- El tema se recarga en caliente al guardar theme.toml.
-- La barra de pestañas responde al mouse.
-- Tabuladores, CJK, emoji y marcas combinantes se miden en columnas de
-  pantalla reales (cursor, scroll, wrap y clics incluidos).
-- Tab indenta el bloque seleccionado en vez de borrarlo; Shift+Tab
-  des-indenta.
-- Los plugins se cargan desde ./plugins, ~/.config/flint/plugins/ y
-  /usr/share/flint/plugins/ — antes solo desde el primero, así que instalado
-  por .deb no cargaba ninguno.
-- CI en GitHub Actions (.github/workflows/ci.yml): compila, corre los tests y
-  clippy sin warnings en cada push y cada pull request.
-- Autocompletado en archivos sin servidor de lenguaje: completa con las
-  palabras que ya están escritas en el buffer (sin distinguir mayúsculas,
-  ordenadas por cercanía al cursor), y también cuando hay servidor pero no
-  devolvió sugerencias para esa posición.
-- El ancho del popup de autocompletado y el de la paleta no contaban el
-  espacio inicial de cada línea, así que la etiqueta más larga perdía su
-  último carácter.
-- Con ajuste de línea, las filas se cortan donde el próximo carácter no entra
-  en vez de en una grilla fija cada content_w: un carácter ancho ya no queda
-  partido (y por lo tanto sin dibujarse) en el borde de una fila.
-- Con ajuste de línea, el tope de la pantalla es una fila visual y no una
-  línea (row_offset + row_sub_offset), así que una línea más alta que la
-  pantalla entera se puede recorrer por dentro en vez de quedar cortada.
-- Vista previa de Markdown (Ctrl+E): el documento renderizado, de solo
-  lectura, con los cercos de código resaltados por tree-sitter. Cacheada
-  contra la versión del buffer y el ancho de pantalla. Quedan afuera las
-  tablas, las imágenes y las listas de tareas anidadas.
-- Resaltado de Markdown (.md/.markdown), con las dos gramáticas que la
-  sintaxis necesita: bloques e inline. Títulos, negrita, cursiva y links se
-  distinguen por forma (negrita/cursiva/subrayado), no por color.
-- Releases con binarios ya compilados (.github/workflows/release.yml): al
-  empujar una etiqueta vX.Y.Z se publican el .deb, un tar.gz para cualquier
-  Linux x86_64 y sus sha256, si la etiqueta coincide con Cargo.toml.
-
-Nota sobre el CI: no corre `cargo fmt --check`. El código tiene un estilo
-propio deliberado y nadie verificó todavía si pasa rustfmt tal cual; meterlo
-sin comprobarlo pondría el CI en rojo desde el primer push y forzaría un
-reformateo masivo. Queda como decisión pendiente, no como olvido.
+Descartado a propósito (no proponer de nuevo sin un motivo nuevo):
+- Terminal integrada: tmux ya lo resuelve.
+- Paneles divididos: las pestañas y tmux alcanzan. Si algún día se hace,
+  el scroll tiene que pasar del Editor a una struct de vista.
+- Gestor de plugins: no hace falta mientras haya pocos plugins; se copian
+  a ~/.config/flint/plugins/.
+- Los ~130 lenguajes de micro: hay 17 con tree-sitter. Agregar uno es una
+  fila en LENGUAJES (highlight.rs) y una variante de Lang.
+- Leer el portapapeles por OSC 52: las terminales lo traen apagado por
+  seguridad.
