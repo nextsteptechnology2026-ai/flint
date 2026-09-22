@@ -3,12 +3,12 @@ Pendientes de Flint
 Lo terminado no se anota acá: está en el historial de git.
 
 Chicos:
-1. Revisar la próxima release, que es la primera con estos cambios:
-   - que el .deb del runner sea idéntico a uno armado con
-     packaging/build-deb.sh dentro de Ubuntu 24.04 (en local ya da lo
-     mismo en rutas distintas; entre máquinas falta verlo);
-   - que salgan el .deb y el tar.gz de Linux ARM (runner
-     ubuntu-24.04-arm), que no se pudieron probar acá.
+1. Confirmar que el .deb publicado se reproduce byte a byte. En la 0.6.0 el
+   del runner y uno armado acá tienen el mismo rustc, el mismo enlazador,
+   las mismas fechas y ninguna ruta de máquina; difieren solo por el
+   compilador de C que arma las gramáticas y Lua (GCC 13.3 de Ubuntu 24.04
+   en el runner, GCC 16.2 acá). Falta armarlo dentro de Ubuntu 24.04 (un
+   contenedor) y comparar el sha256.
 
 Por decidir:
 - Si el CI corre `cargo fmt --check`. Nadie comprobó si el código pasa
