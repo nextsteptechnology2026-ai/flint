@@ -1,0 +1,9 @@
+Una gramática de tree-sitter mínima, para probar que un plugin puede traer
+un lenguaje propio (flint.language). La usan los tests: la compilan con
+`cc -shared` a una biblioteca y la cargan como lo haría un plugin.
+
+src/parser.c es generado, no se edita a mano. Para regenerarlo:
+
+    npx tree-sitter-cli@0.25 generate
+
+(ABI 14; lo que acepta tree-sitter 0.27 va de la 13 a la 15.)

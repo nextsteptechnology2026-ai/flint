@@ -2,11 +2,8 @@ Pendientes de Flint
 
 Lo terminado no se anota acá: está en el historial de git.
 
-Medianos:
-1. API de plugins: definir un lenguaje nuevo con su resaltado.
-
 Chicos:
-2. Revisar la próxima release, que es la primera con estos cambios:
+1. Revisar la próxima release, que es la primera con estos cambios:
    - que el .deb del runner sea idéntico a uno armado con
      packaging/build-deb.sh dentro de Ubuntu 24.04 (en local ya da lo
      mismo en rutas distintas; entre máquinas falta verlo);
@@ -24,6 +21,7 @@ Descartado a propósito (no proponer de nuevo sin un motivo nuevo):
 - Gestor de plugins: no hace falta mientras haya pocos plugins; se copian
   a ~/.config/flint/plugins/.
 - Los ~130 lenguajes de micro: hay 17 con tree-sitter. Agregar uno es una
-  fila en LENGUAJES (highlight.rs) y una variante de Lang.
+  fila en LENGUAJES (highlight.rs) y una variante de Lang, o un plugin con
+  flint.define_language y la gramática compilada.
 - Leer el portapapeles por OSC 52: las terminales lo traen apagado por
   seguridad.

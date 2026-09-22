@@ -70,10 +70,25 @@ struct Buffer {
 
 impl Buffer {
     fn open(path: Option<PathBuf>) -> io::Result<Buffer> {
-        let ed = Editor::open(path)?;
-        // Primero la extensión, que es barata y no se equivoca; si el archivo
-        // no tiene (un script llamado `deploy` a secas), lo dice su shebang.
-        let lang = ed
+        let mut buffer = Buffer {
+            ed: Editor::open(path)?,
+            lang: None,
+            highlighter: None,
+            doc_uri: None,
+            lsp_lang_id: None,
+            lsp_synced_version: 0,
+        };
+        buffer.detectar_lenguaje();
+        Ok(buffer)
+    }
+
+    /// Primero la extensión, que es barata y no se equivoca; si el archivo
+    /// no tiene (un script llamado `deploy` a secas), lo dice su shebang. Se
+    /// vuelve a llamar después de cargar los plugins, que pueden traer
+    /// lenguajes nuevos: el primer archivo se abre antes que ellos.
+    fn detectar_lenguaje(&mut self) {
+        let ed = &mut self.ed;
+        self.lang = ed
             .filename
             .as_ref()
             .and_then(|p| highlight::lang_for_path(p))
@@ -81,19 +96,11 @@ impl Buffer {
                 let primera: String = ed.rope.line(0).chars().take(200).collect();
                 highlight::lang_for_first_line(&primera)
             });
-        let highlighter = lang.as_ref().and_then(highlight::LanguageHighlighter::new);
-        let mut ed = ed;
+        self.highlighter = self.lang.as_ref().and_then(highlight::LanguageHighlighter::new);
         // Lo que depende del lenguaje y no de la configuración del usuario
         // se fija acá, donde el lenguaje recién se conoce.
-        ed.indent_after_colon = lang.is_some_and(|l| l.indents_after_colon());
-        Ok(Buffer {
-            ed,
-            lang,
-            highlighter,
-            doc_uri: None,
-            lsp_lang_id: None,
-            lsp_synced_version: 0,
-        })
+        ed.indent_after_colon = self.lang.is_some_and(|l| l.indents_after_colon());
+        ed.highlights_dirty = true;
     }
 
     /// Lo que se muestra en la barra de pestañas: solo el nombre de archivo,
@@ -544,6 +551,10 @@ fn main() -> io::Result<()> {
             buffer.ed.status,
             carga.commands.len()
         );
+    }
+    if !carga.lenguajes.is_empty() {
+        buffer.detectar_lenguaje();
+        buffer.ed.status = format!("{} · lenguajes de plugin: {}", buffer.ed.status, carga.lenguajes.join(", "));
     }
     if let Some(first_error) = carga.errors.first() {
         buffer.ed.status = format!("{} · error de plugin: {first_error}", buffer.ed.status);

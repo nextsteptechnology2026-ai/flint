@@ -153,6 +153,9 @@ pub struct PluginLoad {
     pub bridge: PluginBridge,
     pub commands: Vec<PluginCommand>,
     pub binds: Vec<PluginBind>,
+    /// Los nombres de los lenguajes que definieron los scripts
+    /// (`flint.define_language`).
+    pub lenguajes: Vec<String>,
     pub errors: Vec<String>,
 }
 
@@ -167,9 +170,20 @@ impl PluginBridge {
             Rc::new(RefCell::new(Vec::new()));
         let binds: Rc<RefCell<Vec<PluginBind>>> = Rc::new(RefCell::new(Vec::new()));
         let manejadores: Rc<RefCell<Vec<(Evento, RegistryKey)>>> = Rc::new(RefCell::new(Vec::new()));
+        let lenguajes: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        // El directorio del script que se está cargando: las rutas que da
+        // `flint.define_language` son relativas a él, no a donde se arrancó Flint.
+        let dir_script: Rc<RefCell<PathBuf>> = Rc::new(RefCell::new(PathBuf::new()));
 
         let mut errors = Vec::new();
-        if let Err(e) = install_api(&lua, &registered, &binds, &manejadores, &efectos, &ctx) {
+        let celdas = Celdas {
+            registered: &registered,
+            binds: &binds,
+            manejadores: &manejadores,
+            lenguajes: &lenguajes,
+            dir_script: &dir_script,
+        };
+        if let Err(e) = install_api(&lua, &celdas, &efectos, &ctx) {
             errors.push(format!("No se pudo preparar la API de plugins: {e}"));
         }
 
@@ -199,6 +213,7 @@ impl PluginBridge {
                         seen.push(file_name);
                         match std::fs::read_to_string(&path) {
                             Ok(src) => {
+                                *dir_script.borrow_mut() = dir.clone();
                                 let name = path.display().to_string();
                                 if let Err(e) = lua.load(&src).set_name(&name).exec() {
                                     errors.push(format!("{name}: {e}"));
@@ -223,11 +238,13 @@ impl PluginBridge {
             .map(|(id, label, key)| PluginCommand { id, label, key })
             .collect();
         let binds = std::mem::take(&mut *binds.borrow_mut());
+        let lenguajes = std::mem::take(&mut *lenguajes.borrow_mut());
 
         PluginLoad {
             bridge: PluginBridge { lua, efectos, ctx, manejadores },
             commands,
             binds,
+            lenguajes,
             errors,
         }
     }
@@ -287,16 +304,71 @@ impl PluginBridge {
     }
 }
 
+/// Donde la API deja lo que los scripts registran al cargarse.
 #[allow(clippy::type_complexity)]
+struct Celdas<'a> {
+    registered: &'a Rc<RefCell<Vec<(String, String, RegistryKey)>>>,
+    binds: &'a Rc<RefCell<Vec<PluginBind>>>,
+    manejadores: &'a Rc<RefCell<Vec<(Evento, RegistryKey)>>>,
+    lenguajes: &'a Rc<RefCell<Vec<String>>>,
+    dir_script: &'a Rc<RefCell<PathBuf>>,
+}
+
+/// `flint.define_language{...}`: arma la definición desde la tabla de Lua y la
+/// registra. Las rutas son relativas al directorio del script.
+fn lenguaje_de_tabla(t: &mlua::Table, dir: &std::path::Path) -> mlua::Result<crate::highlight::LenguajePlugin> {
+    let falta = |campo: &str| mlua::Error::RuntimeError(format!("flint.define_language: falta \"{campo}\""));
+    let id: String = t.get::<Option<String>>("id")?.ok_or_else(|| falta("id"))?;
+    let gramatica: String = t.get::<Option<String>>("grammar")?.ok_or_else(|| falta("grammar"))?;
+    let resaltado: String = t.get::<Option<String>>("highlights")?.ok_or_else(|| falta("highlights"))?;
+    let leer = |relativa: &str| {
+        let ruta = dir.join(relativa);
+        std::fs::read_to_string(&ruta)
+            .map_err(|e| mlua::Error::RuntimeError(format!("flint.define_language: {}: {e}", ruta.display())))
+    };
+    let inyecciones = match t.get::<Option<String>>("injections")? {
+        Some(r) => leer(&r)?,
+        None => String::new(),
+    };
+    let simbolo = t
+        .get::<Option<String>>("symbol")?
+        .unwrap_or_else(|| format!("tree_sitter_{}", id.replace('-', "_")));
+    Ok(crate::highlight::LenguajePlugin {
+        label: t.get::<Option<String>>("label")?.unwrap_or_else(|| id.clone()),
+        exts: t.get::<Option<Vec<String>>>("extensions")?.unwrap_or_default(),
+        filenames: t.get::<Option<Vec<String>>>("filenames")?.unwrap_or_default(),
+        line_comment: t.get("line_comment")?,
+        lsp_command: t.get("lsp")?,
+        biblioteca: dir.join(gramatica),
+        simbolo,
+        resaltado: leer(&resaltado)?,
+        inyecciones,
+        id,
+    })
+}
+
 fn install_api(
     lua: &Lua,
-    registered: &Rc<RefCell<Vec<(String, String, RegistryKey)>>>,
-    binds: &Rc<RefCell<Vec<PluginBind>>>,
-    manejadores: &Rc<RefCell<Vec<(Evento, RegistryKey)>>>,
+    celdas: &Celdas,
     efectos: &Rc<RefCell<Vec<PluginEffect>>>,
     ctx: &Rc<RefCell<PluginContext>>,
 ) -> mlua::Result<()> {
+    let Celdas { registered, binds, manejadores, lenguajes, dir_script } = *celdas;
     let flint = lua.create_table()?;
+
+    // `flint.define_language{ id = "ini", extensions = {"ini"}, grammar = "ini.so",
+    // highlights = "highlights.scm" }`. Si algo no está bien (la biblioteca
+    // no abre, la consulta no compila) es un error al cargar el script.
+    let (celda, dir) = (lenguajes.clone(), dir_script.clone());
+    let language = lua.create_function(move |_, t: mlua::Table| {
+        let definicion = lenguaje_de_tabla(&t, &dir.borrow())?;
+        let label = definicion.label.clone();
+        crate::highlight::registrar(definicion)
+            .map_err(|e| mlua::Error::RuntimeError(format!("flint.define_language: {e}")))?;
+        celda.borrow_mut().push(label);
+        Ok(())
+    })?;
+    flint.set("define_language", language)?;
 
     // ---------- registro, en tiempo de carga ----------
 
@@ -650,6 +722,48 @@ mod tests {
         limpiar(dir);
         assert_eq!(carga.errors.len(), 1);
         assert!(carga.errors[0].contains("evento desconocido"), "{}", carga.errors[0]);
+    }
+
+    #[test]
+    fn un_script_define_un_lenguaje_con_rutas_relativas_a_el() {
+        // La gramática y la consulta quedan al lado del script, como las
+        // distribuiría un plugin.
+        let dir = crate::highlight::compilar_gramatica_de_prueba("plugin");
+        std::fs::write(
+            dir.join("lenguaje.lua"),
+            r##"
+            flint.define_language{
+              id = "pruebad",
+              label = "Prueba D",
+              extensions = {"pruebad"},
+              grammar = "prueba.so",
+              symbol = "tree_sitter_prueba",
+              highlights = "highlights.scm",
+              line_comment = "#",
+            }
+            "##,
+        )
+        .unwrap();
+        let carga = PluginBridge::load(std::slice::from_ref(&dir));
+        assert!(carga.errors.is_empty(), "{:?}", carga.errors);
+        assert_eq!(carga.lenguajes, vec!["Prueba D"]);
+        let lang = crate::highlight::lang_for_path(std::path::Path::new("x.pruebad")).unwrap();
+        assert_eq!(lang.label(), "Prueba D");
+        limpiar(dir);
+    }
+
+    #[test]
+    fn un_lenguaje_mal_definido_es_un_error_al_cargar() {
+        let (carga, dir) = cargar(
+            "lenguaje-roto",
+            r#"flint.define_language{ id = "roto", grammar = "no-esta.so", highlights = "tampoco.scm" }"#,
+        );
+        limpiar(dir);
+        assert_eq!(carga.errors.len(), 1);
+        assert!(carga.errors[0].contains("tampoco.scm"), "{}", carga.errors[0]);
+        let (carga, dir) = cargar("lenguaje-sin-id", r#"flint.define_language{ grammar = "x.so" }"#);
+        limpiar(dir);
+        assert!(carga.errors[0].contains("falta \"id\""), "{}", carga.errors[0]);
     }
 
     #[test]

@@ -496,6 +496,52 @@ end)
 - Un nombre de evento que no existe es un error al cargar el script, no un
   manejador que nunca corre.
 
+### Lenguajes propios
+
+Un plugin puede traer un lenguaje que Flint no conoce, con el mismo nivel que
+los de fábrica: una gramática de tree-sitter de verdad, no expresiones
+regulares. Viaja compilada, como biblioteca compartida, junto con su consulta
+de resaltado:
+
+```lua
+flint.define_language{
+    id = "nginx",                    -- el identificador (y la clave en [lsp])
+    label = "Nginx",                 -- cómo se ve en la barra; por defecto, el id
+    extensions = {"conf"},           -- y/o filenames = {"nginx.conf"}
+    grammar = "nginx.so",            -- la gramática compilada
+    highlights = "highlights.scm",   -- su consulta de resaltado
+    injections = "injections.scm",   -- opcional
+    symbol = "tree_sitter_nginx",    -- opcional; por defecto tree_sitter_<id>
+    line_comment = "#",              -- opcional, para Ctrl+K
+    lsp = "nginx-language-server",   -- opcional
+}
+```
+
+- Las rutas son relativas al directorio del script.
+- Se detecta por extensión o nombre de archivo, **antes** que los de fábrica:
+  un plugin puede reemplazar la gramática de un lenguaje que Flint ya trae.
+- También sirve como inyección: un cerco ```` ```nginx ```` de un Markdown se
+  colorea con esta gramática.
+- Todo lo que puede fallar se revisa al cargar el script, no al abrir un
+  archivo: que la biblioteca abra, que exporte el símbolo, que se haya
+  generado con una versión de tree-sitter compatible, y que las consultas
+  compilen. Si algo falla, es un error del script con el motivo.
+- Las capturas de la consulta son las de siempre (`@keyword`, `@string`,
+  `@comment`, `@function`, `@type`, `@number`…). Una que Flint no conoce no
+  pinta nada.
+
+Para armar la biblioteca a partir de una gramática (su `grammar.js`):
+
+```sh
+tree-sitter generate                    # o: npx tree-sitter-cli generate
+cc -shared -fPIC -O2 -I src src/parser.c -o nginx.so
+# si la gramática trae src/scanner.c, va en el mismo comando
+```
+
+La biblioteca es de la plataforma donde se compiló: un plugin que se reparte
+para Linux y macOS lleva una por plataforma. `tests/gramatica-prueba/` tiene
+una gramática mínima armada así, que usan los tests.
+
 ### Un ejemplo completo
 
 ```lua
@@ -517,9 +563,8 @@ entera: va adentro del `.deb` y del `.tar.gz`, y hay un test que verifica que
 siga cargando sin errores.
 
 **Lo que un plugin todavía no puede hacer**: abrir o guardar archivos por su
-cuenta (salvo con `flint.action("save")`), definir un lenguaje nuevo con su
-propio resaltado, ni correr mientras el usuario escribe: corre cuando se lo
-invoca o ante uno de los eventos de arriba.
+cuenta (salvo con `flint.action("save")`), ni correr mientras el usuario
+escribe: corre cuando se lo invoca o ante uno de los eventos de arriba.
 
 ## Ir a la definición y renombrar (LSP)
 

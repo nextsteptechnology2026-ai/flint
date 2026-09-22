@@ -41,6 +41,10 @@ pub struct LangDef {
     /// `String` porque algunas consultas son la suma de dos: la de
     /// TypeScript es un delta que se apoya en la de JavaScript.
     grammar: fn() -> (Language, String),
+    /// La gramática y la consulta de un lenguaje que trajo un plugin. Si
+    /// está, manda sobre `grammar`: una gramática cargada de una biblioteca
+    /// no se puede devolver desde un `fn` sin estado.
+    cargada: Option<(Language, &'static str)>,
     /// Consulta de inyecciones: qué tramos de un archivo de este lenguaje se
     /// analizan con la gramática de otro. Es lo que hace que el `<style>` de
     /// un HTML se vea como CSS y el cerco de código de un Markdown como el
@@ -52,6 +56,8 @@ pub struct LangDef {
 /// muestra como texto plano — sigue siendo editable, solo sin color.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
+    /// Un lenguaje que trajo un plugin: el índice en `CARGADOS`.
+    Cargado(u16),
     Rust,
     Python,
     Json,
@@ -71,8 +77,8 @@ pub enum Lang {
     Yaml,
 }
 
-/// En el mismo orden que las variantes de `Lang`: el índice de la variante
-/// es el índice de su fila.
+/// Los lenguajes de fábrica, en el mismo orden que sus filas en
+/// `LENGUAJES`: la posición de una variante acá es el índice de su fila.
 pub const TODOS: &[Lang] = &[
     Lang::Rust,
     Lang::Python,
@@ -113,6 +119,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: Some("rust-analyzer"),
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -130,6 +137,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("#"),
         indents_after_colon: true,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -147,6 +155,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: None,
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -164,6 +173,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("#"),
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -181,6 +191,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: None,
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: tree_sitter_md::INJECTION_QUERY_BLOCK,
         grammar: || {
             (
@@ -198,6 +209,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("#"),
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -215,6 +227,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: Some("clangd"),
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -232,6 +245,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: Some("clangd"),
+        cargada: None,
         // La consulta de C++ es un delta sobre la de C, igual que la de
         // TypeScript sobre la de JavaScript: sola no captura ni un `int`.
         // La de C va primero para que los patrones propios de C++ ganen.
@@ -258,6 +272,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: None,
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -275,6 +290,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: Some("gopls"),
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -292,6 +308,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: None,
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: tree_sitter_html::INJECTIONS_QUERY,
         grammar: || {
             (
@@ -309,6 +326,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -326,6 +344,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: tree_sitter_javascript::INJECTIONS_QUERY,
         grammar: || (tree_sitter_javascript::LANGUAGE.into(), consulta_js()),
     },
@@ -338,6 +357,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("--"),
         indents_after_colon: false,
         lsp_command: Some("lua-language-server"),
+        cargada: None,
         inyecciones: tree_sitter_lua::INJECTIONS_QUERY,
         grammar: || {
             (
@@ -355,6 +375,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         // La consulta de TypeScript es un delta: va *después* de la de
         // JavaScript para que sus patrones (los tipos, sobre todo) ganen,
         // que es la regla de tree-sitter — manda el último que captura.
@@ -379,6 +400,7 @@ static LENGUAJES: &[LangDef] = &[
         line_comment: Some("//"),
         indents_after_colon: false,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -398,6 +420,7 @@ static LENGUAJES: &[LangDef] = &[
         // Python.
         indents_after_colon: true,
         lsp_command: None,
+        cargada: None,
         inyecciones: "",
         grammar: || {
             (
@@ -408,9 +431,24 @@ static LENGUAJES: &[LangDef] = &[
     },
 ];
 
+impl LangDef {
+    fn gramatica(&self) -> (Language, String) {
+        match &self.cargada {
+            Some((language, consulta)) => (language.clone(), consulta.to_string()),
+            None => (self.grammar)(),
+        }
+    }
+}
+
 impl Lang {
     fn def(&self) -> &'static LangDef {
-        &LENGUAJES[*self as usize]
+        match self {
+            Lang::Cargado(i) => CARGADOS.lock().unwrap()[*i as usize],
+            de_fabrica => {
+                let fila = TODOS.iter().position(|l| l == de_fabrica);
+                &LENGUAJES[fila.expect("todo lenguaje de fábrica está en TODOS")]
+            }
+        }
     }
 
     pub fn label(&self) -> &'static str {
@@ -449,7 +487,7 @@ impl Lang {
 pub fn lang_for_name(nombre: &str) -> Option<Lang> {
     let n = nombre.to_ascii_lowercase();
     let n = n.as_str();
-    TODOS.iter().copied().find(|l| {
+    todos().into_iter().find(|l| {
         let d = l.def();
         d.id == n || d.exts.contains(&n) || d.alias.contains(&n)
     })
@@ -482,19 +520,119 @@ pub fn lang_for_first_line(line: &str) -> Option<Lang> {
 pub fn lang_for_path(path: &Path) -> Option<Lang> {
     if let Some(nombre) = path.file_name().and_then(|n| n.to_str()) {
         let n = nombre.to_ascii_lowercase();
-        if let Some(lang) = TODOS
-            .iter()
-            .copied()
+        if let Some(lang) = todos()
+            .into_iter()
             .find(|l| l.def().filenames.contains(&n.as_str()))
         {
             return Some(lang);
         }
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    TODOS
-        .iter()
-        .copied()
+    todos()
+        .into_iter()
         .find(|l| l.def().exts.contains(&ext.as_str()))
+}
+
+// ---------- lenguajes que traen los plugins ----------
+
+/// Los lenguajes que registraron los plugins, en el orden en que se
+/// cargaron. Se agregan al arrancar y no se sacan: la gramática vive lo que
+/// vive el proceso.
+static CARGADOS: std::sync::Mutex<Vec<&'static LangDef>> = std::sync::Mutex::new(Vec::new());
+
+/// Todos los lenguajes, los de los plugins primero: así un plugin puede
+/// reemplazar a uno de fábrica para una extensión (con una gramática más
+/// nueva, por ejemplo) en vez de que el suyo no se use nunca.
+fn todos() -> Vec<Lang> {
+    let cargados = CARGADOS.lock().unwrap().len() as u16;
+    (0..cargados).map(Lang::Cargado).chain(TODOS.iter().copied()).collect()
+}
+
+/// Lo que un plugin dice de un lenguaje propio (`flint.define_language`).
+pub struct LenguajePlugin {
+    pub id: String,
+    pub label: String,
+    pub exts: Vec<String>,
+    pub filenames: Vec<String>,
+    pub line_comment: Option<String>,
+    pub lsp_command: Option<String>,
+    /// La gramática compilada: una biblioteca compartida (`.so`, `.dylib`).
+    pub biblioteca: std::path::PathBuf,
+    /// La función que exporta la biblioteca; por convención
+    /// `tree_sitter_<nombre>`.
+    pub simbolo: String,
+    /// La consulta de resaltado (`highlights.scm`) y la de inyecciones, que
+    /// puede estar vacía.
+    pub resaltado: String,
+    pub inyecciones: String,
+}
+
+fn para_siempre(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+fn sin_gramatica() -> (Language, String) {
+    unreachable!("un lenguaje cargado usa `cargada`, no `grammar`")
+}
+
+/// Carga la gramática de un plugin y deja el lenguaje disponible para
+/// detectar archivos, resaltarlos y como inyección. Todo lo que puede fallar
+/// se prueba acá, al arrancar, y no la primera vez que se abre un archivo:
+/// que la biblioteca abra, que tenga el símbolo, que la versión de
+/// tree-sitter con la que se generó sea compatible y que las consultas
+/// compilen contra ella.
+pub fn registrar(p: LenguajePlugin) -> Result<Lang, String> {
+    let id = p.id.to_ascii_lowercase();
+    if CARGADOS.lock().unwrap().iter().any(|d| d.id == id) {
+        return Err(format!("ya hay otro plugin que definió el lenguaje \"{id}\""));
+    }
+    let language = cargar_gramatica(&p.biblioteca, &p.simbolo)?;
+    Parser::new()
+        .set_language(&language)
+        .map_err(|e| format!("la gramática no es compatible con esta versión de tree-sitter: {e}"))?;
+    Query::new(&language, &p.resaltado).map_err(|e| format!("la consulta de resaltado no compila: {e}"))?;
+    if !p.inyecciones.is_empty() {
+        Query::new(&language, &p.inyecciones)
+            .map_err(|e| format!("la consulta de inyecciones no compila: {e}"))?;
+    }
+    let lista = |v: Vec<String>| -> &'static [&'static str] {
+        Box::leak(v.into_iter().map(|s| para_siempre(s.to_ascii_lowercase())).collect())
+    };
+    let def: &'static LangDef = Box::leak(Box::new(LangDef {
+        id: para_siempre(id),
+        label: para_siempre(p.label),
+        exts: lista(p.exts),
+        filenames: lista(p.filenames),
+        alias: &[],
+        line_comment: p.line_comment.map(para_siempre),
+        indents_after_colon: false,
+        lsp_command: p.lsp_command.map(para_siempre),
+        cargada: Some((language, para_siempre(p.resaltado))),
+        inyecciones: para_siempre(p.inyecciones),
+        grammar: sin_gramatica,
+    }));
+    let mut cargados = CARGADOS.lock().unwrap();
+    cargados.push(def);
+    Ok(Lang::Cargado((cargados.len() - 1) as u16))
+}
+
+fn cargar_gramatica(ruta: &Path, simbolo: &str) -> Result<Language, String> {
+    // SAFETY: abrir una biblioteca corre su código de inicio. Es código que
+    // el usuario instaló junto con el plugin, con la misma confianza que el
+    // script Lua que la pide (que ya puede correr cualquier comando).
+    let biblioteca = unsafe { libloading::Library::new(ruta) }
+        .map_err(|e| format!("no se pudo abrir {}: {e}", ruta.display()))?;
+    // SAFETY: `tree_sitter_<nombre>` es la función que genera tree-sitter
+    // para toda gramática, sin argumentos y devolviendo el puntero al
+    // lenguaje. Que exista con ese nombre y otra firma sería un error de
+    // quien compiló la biblioteca, igual que con cualquier gramática.
+    let funcion = unsafe { biblioteca.get::<unsafe extern "C" fn() -> *const ()>(simbolo.as_bytes()) }
+        .map(|s| *s)
+        .map_err(|_| format!("{} no exporta {simbolo}", ruta.display()))?;
+    // La biblioteca no se cierra nunca: el lenguaje apunta adentro de ella.
+    std::mem::forget(biblioteca);
+    // SAFETY: ver arriba; la biblioteca sigue cargada para siempre.
+    Ok(Language::new(unsafe { tree_sitter_language::LanguageFn::from_raw(funcion) }))
 }
 
 const CAPTURE_NAMES: &[&str] = &[
@@ -819,7 +957,7 @@ fn armar_inyectada(nombre: &str) -> Option<Gramatica> {
         );
     }
     let lang = lang_for_name(nombre)?;
-    let (language, query) = (lang.def().grammar)();
+    let (language, query) = lang.def().gramatica();
     Gramatica::nueva(language, &query)
 }
 
@@ -942,7 +1080,7 @@ const MAX_PROFUNDIDAD: usize = 3;
 
 impl LanguageHighlighter {
     pub fn new(lang: &Lang) -> Option<Self> {
-        let (language, query) = (lang.def().grammar)();
+        let (language, query) = lang.def().gramatica();
         let principal = Gramatica::nueva(language, &query)?;
         let fuente_iny = lang.def().inyecciones;
         let inyecciones = if fuente_iny.is_empty() {
@@ -1546,8 +1684,22 @@ mod tests_lenguajes {
     #[test]
     fn la_tabla_esta_alineada_con_el_enum() {
         assert_eq!(TODOS.len(), LENGUAJES.len(), "faltó una fila o una variante");
-        for (i, lang) in TODOS.iter().enumerate() {
-            assert_eq!(*lang as usize, i, "{lang:?} no está en su posición");
+        // La fila de cada variante es su posición en TODOS: una variante
+        // repetida dejaría una fila sin usar y otra con dos dueños.
+        let distintas: HashSet<String> = TODOS.iter().map(|l| format!("{l:?}")).collect();
+        assert_eq!(distintas.len(), TODOS.len(), "hay una variante repetida en TODOS");
+        // Y cada variante cae en la fila de su lenguaje: el nombre de la
+        // variante es el id, la etiqueta, un alias o una extensión de la fila.
+        for lang in TODOS {
+            let variante = format!("{lang:?}").to_lowercase();
+            let d = lang.def();
+            let nombres: Vec<String> = [d.id, d.label]
+                .iter()
+                .chain(d.alias)
+                .chain(d.exts)
+                .map(|n| n.to_lowercase())
+                .collect();
+            assert!(nombres.contains(&variante), "{lang:?} cae en la fila de {}", d.label);
         }
     }
 
@@ -1618,7 +1770,7 @@ mod tests_lenguajes {
         // casi en blanco y negro y nada lo avisaba.
         let mut faltantes: Vec<String> = Vec::new();
         for lang in TODOS {
-            let (language, query) = (lang.def().grammar)();
+            let (language, query) = lang.def().gramatica();
             let q = Query::new(&language, &query).expect("la consulta compila");
             for nombre in q.capture_names() {
                 if reconocida(nombre).is_none() && !CAPTURAS_IGNORADAS.contains(nombre) {
@@ -1939,7 +2091,7 @@ mod tests_oraculo {
     /// El resaltado como lo calculaba el motor viejo, sobre la misma
     /// gramática y la misma consulta que usa el nuevo.
     fn oraculo(lang: &Lang, source: &str) -> Vec<(Range<usize>, HighlightKind)> {
-        let (language, query) = (lang.def().grammar)();
+        let (language, query) = lang.def().gramatica();
         let config = configurar(language, &query, inyecciones(lang));
         con(&config, source)
     }
@@ -2242,3 +2394,110 @@ mod tests_segundo_plano {
     }
 }
 
+/// Compila la gramática de `tests/gramatica-prueba` a una biblioteca
+/// compartida, como la traería un plugin. Cada llamada deja la suya en un
+/// directorio propio, así los tests no se pisan.
+#[cfg(test)]
+pub fn compilar_gramatica_de_prueba(nombre: &str) -> std::path::PathBuf {
+    let fuente = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gramatica-prueba");
+    let dir = std::env::temp_dir().join(format!("flint-gramatica-{}-{nombre}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let biblioteca = dir.join("prueba.so");
+    let salida = std::process::Command::new("cc")
+        .args(["-shared", "-fPIC", "-O1", "-I"])
+        .arg(fuente.join("src"))
+        .arg(fuente.join("src/parser.c"))
+        .arg("-o")
+        .arg(&biblioteca)
+        .output()
+        .expect("hace falta un compilador de C (cc) para este test");
+    assert!(salida.status.success(), "{}", String::from_utf8_lossy(&salida.stderr));
+    std::fs::copy(fuente.join("highlights.scm"), dir.join("highlights.scm")).unwrap();
+    dir
+}
+
+#[cfg(test)]
+mod tests_lenguajes_de_plugins {
+    //! Una gramática de verdad, compilada y cargada de una biblioteca como la
+    //! traería un plugin. `CARGADOS` es de todo el proceso y los tests corren
+    //! en paralelo: cada uno registra su lenguaje con un id propio.
+    use super::*;
+
+    fn definicion(id: &str, dir: &Path) -> LenguajePlugin {
+        LenguajePlugin {
+            id: id.to_string(),
+            label: format!("Prueba {id}"),
+            exts: vec![id.to_string()],
+            filenames: Vec::new(),
+            line_comment: Some("#".to_string()),
+            lsp_command: None,
+            biblioteca: dir.join("prueba.so"),
+            simbolo: "tree_sitter_prueba".to_string(),
+            resaltado: std::fs::read_to_string(dir.join("highlights.scm")).unwrap(),
+            inyecciones: String::new(),
+        }
+    }
+
+    fn kinds(por_linea: &[Vec<(usize, usize, HighlightKind)>]) -> Vec<Vec<(usize, usize, HighlightKind)>> {
+        por_linea.to_vec()
+    }
+
+    #[test]
+    fn un_lenguaje_cargado_se_detecta_y_se_resalta() {
+        let dir = compilar_gramatica_de_prueba("resalta");
+        let lang = registrar(definicion("pruebaa", &dir)).unwrap();
+        assert_eq!(lang_for_path(Path::new("config.pruebaa")), Some(lang));
+        assert_eq!(lang_for_name("pruebaa"), Some(lang));
+        assert_eq!((lang.id(), lang.label(), lang.line_comment()), ("pruebaa", "Prueba pruebaa", Some("#")));
+
+        let h = LanguageHighlighter::new(&lang).expect("la gramática cargada arma un resaltador");
+        let lineas = h.highlight_lines("# nota\nclave = 42\nnombre = \"hola\"\n");
+        use HighlightKind::*;
+        assert_eq!(
+            kinds(&lineas[..3]),
+            vec![
+                vec![(0, 6, Comment)],
+                vec![(0, 5, Property), (6, 7, Operator), (8, 10, Number)],
+                vec![(0, 6, Property), (7, 8, Operator), (9, 15, String)],
+            ]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn un_cerco_de_markdown_usa_la_gramatica_cargada() {
+        let dir = compilar_gramatica_de_prueba("markdown");
+        registrar(definicion("pruebab", &dir)).unwrap();
+        let md = lang_for_path(Path::new("a.md")).unwrap();
+        let h = LanguageHighlighter::new(&md).unwrap();
+        let lineas = h.highlight_lines("```pruebab\nclave = 42\n```\n");
+        assert!(
+            lineas[1].contains(&(8, 10, HighlightKind::Number)),
+            "el cerco no se coloreó con la gramática del plugin: {:?}",
+            lineas[1]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn los_errores_dicen_que_fallo() {
+        let dir = compilar_gramatica_de_prueba("errores");
+        let error = |cambiar: &dyn Fn(&mut LenguajePlugin)| {
+            let mut d = definicion("pruebac", &dir);
+            cambiar(&mut d);
+            registrar(d).unwrap_err()
+        };
+        let e = error(&|d| d.biblioteca = dir.join("no-existe.so"));
+        assert!(e.contains("no se pudo abrir"), "{e}");
+        let e = error(&|d| d.simbolo = "tree_sitter_otra".to_string());
+        assert!(e.contains("no exporta tree_sitter_otra"), "{e}");
+        let e = error(&|d| d.resaltado = "(nodo_que_no_existe) @comment".to_string());
+        assert!(e.contains("consulta de resaltado no compila"), "{e}");
+
+        // El id se puede registrar una vez; la segunda es un error.
+        registrar(definicion("pruebac", &dir)).unwrap();
+        let e = registrar(definicion("pruebac", &dir)).unwrap_err();
+        assert!(e.contains("ya hay otro plugin"), "{e}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
