@@ -927,7 +927,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
             return Ok(());
         }
 
-        if event::poll(Duration::from_millis(200))? {
+        // Con el primer resaltado corriendo en otro hilo, se vuelve a mirar
+        // seguido para pintar apenas llegue; si no, cada 200 ms alcanza.
+        let resaltando = app.buffers[app.active].highlighter.as_ref().is_some_and(|h| h.resaltando());
+        let espera = Duration::from_millis(if resaltando { 20 } else { 200 });
+        if event::poll(espera)? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     handle_key(app, key, app.text_area.height.max(1) as usize);

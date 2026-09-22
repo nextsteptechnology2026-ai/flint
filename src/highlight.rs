@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use ropey::Rope;
 use tree_sitter::{
@@ -887,6 +888,26 @@ struct Cache {
     arbol: Tree,
 }
 
+/// Desde este tamaño, el primer resaltado de un archivo se hace en otro
+/// hilo. Un archivo de 3 MB tarda casi un segundo entre analizarlo entero y
+/// consultarlo entero, y hacerlo en el hilo de la pantalla la congelaba ese
+/// rato. Debajo de esto tarda menos que un cuadro y no vale la pena ver el
+/// archivo sin color aunque sea un instante.
+const EN_SEGUNDO_PLANO_DESDE: usize = 256 * 1024;
+/// Cuántas líneas desde la primera visible se resaltan antes que el resto.
+const LINEAS_DE_PANTALLA: usize = 200;
+
+type PorLinea = Vec<Vec<(usize, usize, HighlightKind)>>;
+
+/// Lo que manda el hilo del primer resaltado, en orden.
+enum Avance {
+    /// Solo lo que está en pantalla, para que tenga color cuanto antes.
+    Pantalla(PorLinea),
+    /// El archivo entero, con el árbol del que salió: desde ahí sigue el
+    /// resaltado incremental de siempre.
+    Completo(Cache, PorLinea),
+}
+
 pub struct LanguageHighlighter {
     principal: Gramatica,
     /// La consulta que dice qué tramos delega este lenguaje en otro. Es lo
@@ -905,6 +926,12 @@ pub struct LanguageHighlighter {
     inyectadas: RefCell<HashMap<String, Option<Rc<Gramatica>>>>,
     parser: Parser,
     cache: Option<Cache>,
+    lang: Lang,
+    /// El primer resaltado que se está haciendo en otro hilo, si hay uno.
+    en_curso: Option<Receiver<Avance>>,
+    /// Si el hilo terminó sin mandar nada (la gramática no pudo con el
+    /// archivo): ahí no se vuelve a intentar, se cae al camino sincrónico.
+    sin_segundo_plano: bool,
 }
 
 /// Hasta dónde se sigue una inyección adentro de otra. Un Markdown puede
@@ -934,7 +961,76 @@ impl LanguageHighlighter {
             inyectadas: RefCell::new(HashMap::new()),
             parser,
             cache: None,
+            lang: *lang,
+            en_curso: None,
+            sin_segundo_plano: false,
         })
+    }
+
+    /// Si hay un primer resaltado corriendo en otro hilo.
+    pub fn resaltando(&self) -> bool {
+        self.en_curso.is_some()
+    }
+
+    /// Lanza el primer resaltado en otro hilo. El hilo arma su propio
+    /// resaltador (el de acá no se puede compartir entre hilos) y manda dos
+    /// veces: primero las líneas a la vista, después todo.
+    fn lanzar(&mut self, ed: &mut Editor, rope: Rope) {
+        let lang = self.lang;
+        let lineas = rope.len_lines().max(1);
+        let desde = ed.row_offset.min(lineas - 1);
+        let hasta = (desde + LINEAS_DE_PANTALLA).min(lineas - 1);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let Some(mut h) = LanguageHighlighter::new(&lang) else { return };
+            let Some(arbol) = parsear(&mut h.parser, &rope, None) else { return };
+            let fin = if hasta + 1 < lineas { rope.line_to_byte(hasta + 1) } else { rope.len_bytes() };
+            let spans = h.resaltar(&arbol, &rope, rope.line_to_byte(desde)..fin, 0);
+            let mut pantalla = vec![Vec::new(); lineas];
+            volcar(&mut pantalla, &rope, spans, desde..=hasta);
+            if tx.send(Avance::Pantalla(pantalla)).is_err() {
+                return; // se cerró el buffer
+            }
+            let spans = h.resaltar(&arbol, &rope, 0..rope.len_bytes(), 0);
+            let mut todo = vec![Vec::new(); lineas];
+            volcar(&mut todo, &rope, spans, 0..=lineas - 1);
+            let _ = tx.send(Avance::Completo(Cache { texto: rope, arbol }, todo));
+        });
+        self.en_curso = Some(rx);
+        ed.highlights_by_line = vec![Vec::new(); lineas];
+    }
+
+    /// Recoge lo que haya mandado el hilo del primer resaltado. Cuando llega
+    /// el completo, el árbol y el resaltado corresponden al texto de cuando
+    /// se lanzó; si se editó mientras tanto, se marca sucio y la pasada
+    /// incremental de siempre lo pone al día.
+    fn recibir(&mut self, ed: &mut Editor) {
+        let Some(rx) = &self.en_curso else { return };
+        loop {
+            match rx.try_recv() {
+                Ok(Avance::Pantalla(por_linea)) => {
+                    // Si ya se agregaron o borraron líneas, los números no
+                    // coinciden: mejor esperar al completo que pintar corrido.
+                    if por_linea.len() == ed.line_count().max(1) {
+                        ed.highlights_by_line = por_linea;
+                    }
+                }
+                Ok(Avance::Completo(cache, por_linea)) => {
+                    ed.highlights_by_line = por_linea;
+                    self.cache = Some(cache);
+                    self.en_curso = None;
+                    ed.highlights_dirty = true;
+                    return;
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.en_curso = None;
+                    self.sin_segundo_plano = true;
+                    ed.highlights_dirty = true;
+                    return;
+                }
+            }
+        }
     }
 
     /// La gramática de un lenguaje inyectado, por el nombre con el que la
@@ -1126,7 +1222,11 @@ impl LanguageHighlighter {
     fn actualizar(&mut self, ed: &mut Editor) {
         let rope = ed.rope.clone();
         let Some(cache) = self.cache.take() else {
-            self.completo(ed, rope);
+            if rope.len_bytes() >= EN_SEGUNDO_PLANO_DESDE && !self.sin_segundo_plano {
+                self.lanzar(ed, rope);
+            } else {
+                self.completo(ed, rope);
+            }
             return;
         };
         // Si lo dibujado no corresponde al texto del que salió el árbol, no
@@ -1218,6 +1318,18 @@ fn volcar(
     let len_bytes = rope.len_bytes();
     let len_chars = rope.len_chars();
     let tope = by_line.len().saturating_sub(1);
+    // Dónde empieza cada línea de la ventana y cuántos caracteres tiene, en
+    // columnas de carácter. Se calcula una vez por línea y no una por tramo:
+    // una línea con cien tramos se recorría cien veces, y en un archivo
+    // grande eso era casi la mitad del primer resaltado.
+    let base = *ventana.start();
+    let mut lineas: Vec<Option<(usize, usize)>> = vec![None; ventana.end().saturating_sub(base) + 1];
+    let mut limites = |linea: usize| -> (usize, usize) {
+        *lineas[linea - base].get_or_insert_with(|| {
+            let li = rope.line_to_char(linea);
+            (li, li + largo_linea(rope, linea))
+        })
+    };
     for (rango, kind) in spans {
         let inicio_char = rope.byte_to_char(rango.start.min(len_bytes));
         let fin_char = rope.byte_to_char(rango.end.min(len_bytes));
@@ -1232,8 +1344,7 @@ fn volcar(
             continue;
         }
         for (linea, entradas) in by_line.iter_mut().enumerate().take(hasta + 1).skip(desde) {
-            let li = rope.line_to_char(linea);
-            let lf = li + largo_linea(rope, linea);
+            let (li, lf) = limites(linea);
             let s = inicio_char.max(li);
             let e = fin_char.min(lf);
             if s < e {
@@ -1390,7 +1501,13 @@ fn sufijo_comun(a: &Rope, b: &Rope, tope: usize) -> usize {
 /// Recalcula `ed.highlights_by_line` a partir del contenido actual del buffer.
 /// Solo hace trabajo real si `ed.highlights_dirty` está encendido.
 pub fn refresh(ed: &mut Editor, highlighter: Option<&mut LanguageHighlighter>) {
-    if !ed.highlights_dirty {
+    let mut highlighter = highlighter;
+    if let Some(h) = highlighter.as_deref_mut() {
+        h.recibir(ed);
+    }
+    // Con el primer resaltado todavía en otro hilo, lo que se edite ahora
+    // se concilia cuando llegue: queda sucio hasta entonces.
+    if !ed.highlights_dirty || highlighter.as_ref().is_some_and(|h| h.resaltando()) {
         return;
     }
     match highlighter {
@@ -1859,7 +1976,7 @@ mod tests_incremental {
         let mut ed = Editor::open(None).expect("editor vacío");
         ed.rope = texto.clone();
         ed.highlights_dirty = true;
-        refresh(&mut ed, Some(&mut h));
+        h.completo(&mut ed, texto.clone());
         ed.highlights_by_line
     }
 
@@ -2025,4 +2142,103 @@ mod tests_incremental {
     }
 }
 
+
+
+#[cfg(test)]
+mod tests_segundo_plano {
+    //! El primer resaltado de un archivo grande corre en otro hilo. Tiene
+    //! que dar exactamente lo mismo que hacerlo en el momento, también si se
+    //! editó mientras tanto.
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Algo más de 256 KB de Rust de verdad: el propio código de Flint.
+    fn grande() -> Rope {
+        let base = include_str!("editor.rs");
+        let mut texto = String::new();
+        while texto.len() < EN_SEGUNDO_PLANO_DESDE + 1000 {
+            texto.push_str(base);
+        }
+        Rope::from_str(&texto)
+    }
+
+    fn rust() -> Lang {
+        lang_for_path(Path::new("a.rs")).unwrap()
+    }
+
+    fn sincronico(texto: &Rope) -> PorLinea {
+        let mut h = LanguageHighlighter::new(&rust()).unwrap();
+        let mut ed = Editor::open(None).unwrap();
+        h.completo(&mut ed, texto.clone());
+        ed.highlights_by_line
+    }
+
+    /// Llama a `refresh` como el bucle principal hasta que el hilo termine.
+    fn esperar(ed: &mut Editor, h: &mut LanguageHighlighter) {
+        let hasta = Instant::now() + Duration::from_secs(30);
+        loop {
+            refresh(ed, Some(h));
+            if !h.resaltando() && !ed.highlights_dirty {
+                return;
+            }
+            assert!(Instant::now() < hasta, "el hilo no terminó");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn el_primer_resaltado_de_un_archivo_grande_no_frena_y_da_lo_mismo() {
+        let texto = grande();
+        let mut h = LanguageHighlighter::new(&rust()).unwrap();
+        let mut ed = Editor::open(None).unwrap();
+        ed.rope = texto.clone();
+        ed.highlights_dirty = true;
+        refresh(&mut ed, Some(&mut h));
+        // Volvió enseguida, sin color todavía y con el trabajo en otro hilo.
+        assert!(h.resaltando());
+        assert_eq!(ed.highlights_by_line.len(), texto.len_lines());
+        esperar(&mut ed, &mut h);
+        assert_eq!(ed.highlights_by_line, sincronico(&texto));
+    }
+
+    #[test]
+    fn lo_que_se_edita_mientras_tanto_se_concilia_al_llegar() {
+        let texto = grande();
+        let mut h = LanguageHighlighter::new(&rust()).unwrap();
+        let mut ed = Editor::open(None).unwrap();
+        ed.rope = texto;
+        ed.highlights_dirty = true;
+        refresh(&mut ed, Some(&mut h));
+        assert!(h.resaltando());
+        // Un comentario abierto arriba de todo cambia el color de todo lo
+        // que sigue, y una línea nueva corre los números de las demás.
+        ed.rope.insert(0, "/* abierto\n");
+        ed.highlights_dirty = true;
+        refresh(&mut ed, Some(&mut h));
+        esperar(&mut ed, &mut h);
+        assert_eq!(ed.highlights_by_line, sincronico(&ed.rope));
+    }
+
+    #[test]
+    fn primero_llega_lo_que_esta_en_pantalla() {
+        let texto = grande();
+        let mut h = LanguageHighlighter::new(&rust()).unwrap();
+        let mut ed = Editor::open(None).unwrap();
+        ed.rope = texto.clone();
+        ed.row_offset = 1000;
+        h.lanzar(&mut ed, texto.clone());
+        let rx = h.en_curso.take().unwrap();
+        let Ok(Avance::Pantalla(pantalla)) = rx.recv() else { panic!("lo primero no fue la pantalla") };
+        let todo = sincronico(&texto);
+        let ventana = 1000..=1000 + LINEAS_DE_PANTALLA;
+        for (linea, (p, t)) in pantalla.iter().zip(&todo).enumerate() {
+            if ventana.contains(&linea) {
+                assert_eq!(p, t, "la línea {linea} de la pantalla salió distinta");
+            } else {
+                assert!(p.is_empty(), "la línea {linea} está fuera de la pantalla y ya tiene color");
+            }
+        }
+        assert!(matches!(rx.recv(), Ok(Avance::Completo(..))));
+    }
+}
 
