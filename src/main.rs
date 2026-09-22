@@ -129,6 +129,8 @@ struct App {
     /// pestañas, así que no hay nada que clickear ahí).
     tabs_area: Option<Rect>,
     lsp: Option<lsp::LspClient>,
+    /// El servidor que se lanzó y todavía no contestó el `initialize`.
+    lsp_arrancando: Option<ArranqueLsp>,
     /// El lenguaje que sirve `lsp`, si hay uno corriendo — para saber si un
     /// buffer nuevo del mismo lenguaje puede sumarse al mismo servidor en vez
     /// de necesitar uno propio.
@@ -574,26 +576,22 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let lang = buffer.lang;
-    let (lsp_client, doc_uri, lsp_lang_id, caps) =
-        setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme, &cfg);
-    let (lsp_incremental, lsp_definition, lsp_rename, lsp_hover, lsp_format, lsp_firma) =
-        (caps.incremental, caps.definition, caps.rename, caps.hover, caps.format, caps.firma);
-    buffer.doc_uri = doc_uri;
-    buffer.lsp_lang_id = lsp_lang_id;
+    let lsp_arrancando = setup_lsp(&mut terminal, &mut buffer.ed, lang.as_ref(), &theme, &cfg);
 
     let mut app = App {
         buffers: vec![buffer],
         active: 0,
         text_area: Rect::default(),
         tabs_area: None,
-        lsp: lsp_client,
-        lsp_lang: lsp_lang_id,
-        lsp_incremental,
-        lsp_definition,
-        lsp_rename,
-        lsp_hover,
-        lsp_format,
-        lsp_firma,
+        lsp: None,
+        lsp_arrancando,
+        lsp_lang: None,
+        lsp_incremental: false,
+        lsp_definition: false,
+        lsp_rename: false,
+        lsp_hover: false,
+        lsp_format: false,
+        lsp_firma: false,
         firma: None,
         lsp_forzar_sync: false,
         last_was_select_line: false,
@@ -639,66 +637,170 @@ fn main() -> io::Result<()> {
     result
 }
 
-/// Prepara el cliente LSP para el lenguaje detectado, si Flint sabe de un
-/// servidor para él. Si el servidor no está instalado, ofrece instalarlo
-/// (nunca en silencio: siempre se pregunta primero).
-/// El último `bool` dice si el servidor soporta sincronización incremental
-/// — `false` (incluso sin LSP) es siempre seguro, porque hace que
-/// `sync_lsp_if_needed` mande el documento completo, como antes.
+/// Un servidor de lenguaje que ya se lanzó y todavía no contestó el
+/// `initialize`. Vive aparte de `App::lsp` a propósito: hasta que conteste,
+/// el protocolo no deja mandarle nada más, y así ningún pedido (autocompletar,
+/// sincronizar) lo encuentra antes de tiempo.
+struct ArranqueLsp {
+    client: lsp::LspClient,
+    id: u64,
+    lang_id: &'static str,
+    cmd: String,
+    limite: Instant,
+}
+
+/// Cuánto se espera a que un servidor conteste el `initialize`. Mientras
+/// tanto se edita normalmente; pasado esto se sigue sin LSP.
+const ESPERA_ARRANQUE_LSP: Duration = Duration::from_secs(20);
+
+/// Lanza el servidor de lenguaje para el archivo, si Flint sabe de uno, y le
+/// manda el `initialize` sin esperar la respuesta: la atiende el bucle
+/// principal (`atender_arranque_lsp`). Si el servidor no está instalado,
+/// ofrece instalarlo (nunca en silencio: siempre se pregunta primero).
 fn setup_lsp(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ed: &mut Editor,
     lang: Option<&highlight::Lang>,
     theme: &theme::Theme,
     cfg: &config::Config,
-) -> (Option<lsp::LspClient>, Option<String>, Option<&'static str>, Capacidades) {
-    let Some(lang) = lang else {
-        return (None, None, None, Capacidades::default());
-    };
-    let Some(partes) = lsp_command_for(cfg, lang) else {
-        return (None, None, None, Capacidades::default());
-    };
+) -> Option<ArranqueLsp> {
+    let lang = lang?;
+    let partes = lsp_command_for(cfg, lang)?;
     let cmd = partes[0].as_str();
     let cmd_args = &partes[1..];
-    let Some(path) = ed.filename.clone() else {
-        return (None, None, None, Capacidades::default());
-    };
-    let lang_id = lang_id_str(lang);
-    let uri = lsp::file_uri(&path);
+    let path = ed.filename.clone()?;
     let root = lsp::file_uri(path.parent().unwrap_or(Path::new(".")));
 
-    let mut client = match lsp::LspClient::spawn(cmd, cmd_args) {
+    let client = match lsp::LspClient::spawn(cmd, cmd_args) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             if !prompt_install(terminal, ed, cmd, theme) {
                 ed.status = format!("Sin LSP para este archivo (falta {cmd})");
-                return (None, None, None, Capacidades::default());
+                return None;
             }
             match lsp::LspClient::spawn(cmd, cmd_args) {
                 Ok(c) => c,
                 Err(e2) => {
                     ed.status = format!("Sigue sin encontrarse {cmd}: {e2}");
-                    return (None, None, None, Capacidades::default());
+                    return None;
                 }
             }
         }
         Err(e) => {
             ed.status = format!("No se pudo iniciar {cmd}: {e}");
-            return (None, None, None, Capacidades::default());
+            return None;
         }
     };
-
-    ed.status = format!("Iniciando {cmd}…");
-    let _ = terminal.draw(|f| {
-        ui::draw(f, ed, &ui::FrameData::default(), theme);
-    });
-
-    let (ok, caps) = finish_init(&mut client, ed, &uri, &root, lang_id, cmd);
-    if ok {
-        (Some(client), Some(uri), Some(lang_id), caps)
-    } else {
-        (None, None, None, Capacidades::default())
+    match lanzar_arranque(client, &root, lang_id_str(lang), cmd) {
+        Ok(arranque) => {
+            ed.status = format!("Iniciando {cmd}…");
+            Some(arranque)
+        }
+        Err(e) => {
+            ed.status = e;
+            None
+        }
     }
+}
+
+/// Manda el `initialize` y deja el servidor esperando su respuesta.
+fn lanzar_arranque(
+    mut client: lsp::LspClient,
+    root: &str,
+    lang_id: &'static str,
+    cmd: &str,
+) -> Result<ArranqueLsp, String> {
+    let id = client
+        .initialize(root)
+        .map_err(|e| format!("No se pudo hablar con {cmd}: {e}"))?;
+    Ok(ArranqueLsp {
+        client,
+        id,
+        lang_id,
+        cmd: cmd.to_string(),
+        limite: Instant::now() + ESPERA_ARRANQUE_LSP,
+    })
+}
+
+/// Mira si el servidor que está arrancando ya contestó. Cuando contesta, pasa
+/// a ser `app.lsp` y se le abren todos los buffers de su lenguaje con el
+/// texto que tengan ahora, lo escrito mientras arrancaba incluido. Si no
+/// contesta a tiempo o se cae, se sigue sin LSP y la barra dice por qué.
+fn atender_arranque_lsp(app: &mut App) {
+    let Some(arranque) = app.lsp_arrancando.as_mut() else { return };
+    let mut respuesta = None;
+    while let Some(msg) = arranque.client.try_recv() {
+        if msg.get("id").and_then(Value::as_u64) == Some(arranque.id) && msg.get("method").is_none() {
+            respuesta = Some(msg);
+            break;
+        }
+        // Antes de contestar, un servidor puede pedir cosas (una barra de
+        // progreso, la configuración): se contestan igual que después.
+        if let (Some(id), Some(metodo)) = (msg.get("id"), msg.get("method").and_then(Value::as_str)) {
+            let params = msg.get("params").cloned().unwrap_or(Value::Null);
+            arranque.client.respond_default(id.clone(), metodo, &params);
+        }
+    }
+    let fallo = match &respuesta {
+        Some(msg) => msg
+            .get("error")
+            .map(|e| {
+                let detalle = e.get("message").and_then(Value::as_str).unwrap_or("error sin detalle");
+                format!("{} rechazó el arranque: {detalle}; sigo sin LSP", arranque.cmd)
+            })
+            .or_else(|| {
+                msg.get("result")
+                    .is_none_or(Value::is_null)
+                    .then(|| format!("{} contestó el arranque vacío; sigo sin LSP", arranque.cmd))
+            }),
+        None if !arranque.client.is_alive() => Some(format!("{} se cerró al arrancar; sigo sin LSP", arranque.cmd)),
+        None if Instant::now() >= arranque.limite => Some(format!(
+            "{} no respondió en {} s; sigo sin LSP",
+            arranque.cmd,
+            ESPERA_ARRANQUE_LSP.as_secs()
+        )),
+        None => return,
+    };
+    let arranque = app.lsp_arrancando.take().expect("recién mirado");
+    if let Some(motivo) = fallo {
+        app.buffers[app.active].ed.status = motivo;
+        return;
+    }
+    let result = respuesta.and_then(|m| m.get("result").cloned()).unwrap_or(Value::Null);
+    let caps = Capacidades::de(&result);
+    let ArranqueLsp { mut client, id, lang_id, cmd, .. } = arranque;
+    client.pending.remove(&id);
+    let _ = client.send_initialized();
+    app.lsp = Some(client);
+    app.lsp_lang = Some(lang_id);
+    app.lsp_incremental = caps.incremental;
+    app.lsp_definition = caps.definition;
+    app.lsp_rename = caps.rename;
+    app.lsp_hover = caps.hover;
+    app.lsp_format = caps.format;
+    app.lsp_firma = caps.firma;
+    for idx in 0..app.buffers.len() {
+        try_attach_lsp(app, idx);
+    }
+    app.buffers[app.active].ed.status = format!("{cmd} listo{}", resumen_de_capacidades(&caps));
+}
+
+/// Lo que se cuenta en la barra cuando un servidor queda listo.
+fn resumen_de_capacidades(caps: &Capacidades) -> String {
+    let sync_tag = if caps.incremental { " (sync incremental)" } else { " (sync completo)" };
+    let sabe: Vec<&str> = [
+        (caps.definition, "definición"),
+        (caps.rename, "renombre"),
+        (caps.hover, "hover"),
+        (caps.format, "formato"),
+        (caps.firma, "firmas"),
+    ]
+    .iter()
+    .filter(|(si, _)| *si)
+    .map(|(_, nombre)| *nombre)
+    .collect();
+    let extras = if sabe.is_empty() { String::new() } else { format!(" · {}", sabe.join(", ")) };
+    format!("{sync_tag}{extras}")
 }
 
 /// Lo que el servidor dijo que sabe hacer, de lo que a Flint le importa.
@@ -735,50 +837,6 @@ impl Capacidades {
     }
 }
 
-/// `bool` de retorno: si el `initialize` salió bien. El segundo valor dice
-/// si el servidor anunció soporte de sincronización incremental
-/// (`textDocumentSync.change == 2`) — si no, `sync_lsp_if_needed` manda
-/// siempre el documento completo, que es lo único que todo servidor LSP
-/// soporta sin excepción.
-fn finish_init(
-    client: &mut lsp::LspClient,
-    ed: &mut Editor,
-    uri: &str,
-    root: &str,
-    lang_id: &'static str,
-    cmd: &str,
-) -> (bool, Capacidades) {
-    let id = match client.initialize(root) {
-        Ok(id) => id,
-        Err(e) => {
-            ed.status = format!("No se pudo hablar con {cmd}: {e}");
-            return (false, Capacidades::default());
-        }
-    };
-    let Some(result) = wait_for_response(client, id, Duration::from_secs(20)) else {
-        ed.status = format!("{cmd} no respondió a tiempo; sigo sin LSP");
-        return (false, Capacidades::default());
-    };
-    let caps = Capacidades::de(&result);
-    let _ = client.send_initialized();
-    let _ = client.did_open(uri, lang_id, &ed.rope.to_string());
-    let sync_tag = if caps.incremental { " (sync incremental)" } else { " (sync completo)" };
-    let sabe: Vec<&str> = [
-        (caps.definition, "definición"),
-        (caps.rename, "renombre"),
-        (caps.hover, "hover"),
-        (caps.format, "formato"),
-        (caps.firma, "firmas"),
-    ]
-    .iter()
-    .filter(|(si, _)| *si)
-    .map(|(_, nombre)| *nombre)
-    .collect();
-    let extras = if sabe.is_empty() { String::new() } else { format!(" · {}", sabe.join(", ")) };
-    ed.status = format!("{} · {cmd} listo{sync_tag}{extras}", ed.status);
-    (true, caps)
-}
-
 /// `textDocumentSync` en la respuesta de `initialize` puede venir como un
 /// número (0=None, 1=Full, 2=Incremental) o como un objeto con un campo
 /// `change` que es ese mismo número — el spec de LSP permite las dos formas.
@@ -788,24 +846,6 @@ fn supports_incremental_sync(result: &Value) -> bool {
         Some(Value::Number(n)) => n.as_u64() == Some(2),
         Some(Value::Object(_)) => sync.and_then(|s| s.get("change")).and_then(Value::as_u64) == Some(2),
         _ => false,
-    }
-}
-
-/// Espera la respuesta a la petición `id`, hasta `timeout`; devuelve su
-/// campo `"result"` si llegó y lo tenía.
-fn wait_for_response(client: &lsp::LspClient, id: u64, timeout: Duration) -> Option<Value> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return None;
-        }
-        let slice = (deadline - now).min(Duration::from_millis(300));
-        if let Some(v) = client.recv_timeout(slice)
-            && v.get("id").and_then(Value::as_u64) == Some(id)
-        {
-            return v.get("result").cloned();
-        }
     }
 }
 
@@ -948,7 +988,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
         // Con el primer resaltado corriendo en otro hilo, se vuelve a mirar
         // seguido para pintar apenas llegue; si no, cada 200 ms alcanza.
         let resaltando = app.buffers[app.active].highlighter.as_ref().is_some_and(|h| h.resaltando());
-        let espera = Duration::from_millis(if resaltando { 20 } else { 200 });
+        let espera = Duration::from_millis(if resaltando || app.lsp_arrancando.is_some() { 20 } else { 200 });
         if event::poll(espera)? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -1003,6 +1043,7 @@ fn close_active_buffer(app: &mut App) {
 }
 
 fn poll_lsp(app: &mut App) {
+    atender_arranque_lsp(app);
     if app.lsp.is_none() {
         return;
     }
@@ -2500,6 +2541,12 @@ fn try_attach_lsp(app: &mut App, idx: usize) {
         .as_mut()
         .is_some_and(|c| c.did_open(&uri, lang_id, &text).is_ok());
     if opened {
+        // El didOpen ya lleva el texto de ahora: lo que se editó antes (por
+        // ejemplo, mientras el servidor arrancaba) no se vuelve a mandar
+        // como cambio.
+        let buf = &mut app.buffers[idx];
+        let _ = buf.ed.take_lsp_sync_plan();
+        buf.lsp_synced_version = buf.ed.content_version;
         app.buffers[idx].doc_uri = Some(uri);
         app.buffers[idx].lsp_lang_id = Some(lang_id);
         app.buffers[idx].ed.status = format!("{} · {lang_id} LSP conectado", app.buffers[idx].ed.status);
@@ -4261,6 +4308,7 @@ fn app_de_prueba(buffer: Buffer) -> App {
         text_area: Rect { x: 0, y: 1, width: 80, height: 20 },
         tabs_area: None,
         lsp: None,
+        lsp_arrancando: None,
         lsp_lang: None,
         lsp_incremental: false,
         lsp_definition: false,
@@ -4710,6 +4758,17 @@ mod tests_lsp_de_punta_a_punta {
     }
 
     fn abrir(texto: &str) -> Prueba {
+        let mut p = arrancar(texto, servidor_falso(), None);
+        esperar(&mut p, "el arranque", |p| p.app.lsp.is_some());
+        // El servidor escribe el espejo al recibir el didOpen.
+        esperar(&mut p, "el didOpen", |p| std::fs::read_to_string(&p.espejo).is_ok_and(|t| t == texto));
+        p
+    }
+
+    /// Lanza `servidor` sobre un archivo con `texto` y devuelve sin esperar
+    /// a que conteste, como al arrancar Flint. `args` reemplaza al archivo
+    /// espejo que recibe el servidor falso.
+    fn arrancar(texto: &str, servidor: PathBuf, args: Option<Vec<String>>) -> Prueba {
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "flint-lsp-{}-{}",
@@ -4721,32 +4780,13 @@ mod tests_lsp_de_punta_a_punta {
         std::fs::write(&archivo, texto).unwrap();
         let espejo = dir.join("espejo.txt");
 
-        let mut buffer = Buffer::open(Some(archivo.clone())).unwrap();
-        let mut client = lsp::LspClient::spawn(
-            servidor_falso().to_str().unwrap(),
-            &[espejo.display().to_string()],
-        )
-        .unwrap();
-        let uri = lsp::file_uri(&archivo);
+        let buffer = Buffer::open(Some(archivo.clone())).unwrap();
+        let args = args.unwrap_or_else(|| vec![espejo.display().to_string()]);
+        let client = lsp::LspClient::spawn(servidor.to_str().unwrap(), &args).unwrap();
         let root = lsp::file_uri(&dir);
-        let (ok, caps) = finish_init(&mut client, &mut buffer.ed, &uri, &root, "rust", "lsp_falso");
-        assert!(ok, "no inició: {}", buffer.ed.status);
-        buffer.doc_uri = Some(uri);
-        buffer.lsp_lang_id = Some("rust");
-
         let mut app = app_de_prueba(buffer);
-        app.lsp = Some(client);
-        app.lsp_lang = Some("rust");
-        app.lsp_incremental = caps.incremental;
-        app.lsp_definition = caps.definition;
-        app.lsp_rename = caps.rename;
-        app.lsp_hover = caps.hover;
-        app.lsp_format = caps.format;
-        app.lsp_firma = caps.firma;
-        let mut p = Prueba { app, espejo, dir };
-        // El servidor escribe el espejo al recibir el didOpen.
-        esperar(&mut p, "el didOpen", |p| std::fs::read_to_string(&p.espejo).is_ok_and(|t| t == texto));
-        p
+        app.lsp_arrancando = Some(lanzar_arranque(client, &root, "rust", "lsp_falso").unwrap());
+        Prueba { app, espejo, dir }
     }
 
     /// Atiende lo que mande el servidor hasta que `listo` se cumpla, o falla
@@ -4755,6 +4795,11 @@ mod tests_lsp_de_punta_a_punta {
         let hasta = Instant::now() + Duration::from_secs(5);
         while !listo(p) {
             assert!(Instant::now() < hasta, "no llegó {que}; estado: {}", p.app.buffers[0].ed.status);
+            if p.app.lsp_arrancando.is_some() {
+                atender_arranque_lsp(&mut p.app);
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
             let msg = p.app.lsp.as_ref().and_then(|c| c.recv_timeout(Duration::from_millis(20)));
             if let Some(msg) = msg {
                 handle_lsp_message(&mut p.app, msg);
@@ -4832,6 +4877,40 @@ mod tests_lsp_de_punta_a_punta {
         }]);
         dispatch_action(&mut p.app, Action::InsertTab, 10);
         sincronizar(&mut p);
+    }
+
+    #[test]
+    fn se_puede_escribir_mientras_el_servidor_arranca() {
+        let mut p = arrancar("fn main() {}\n", servidor_falso(), None);
+        // Nada de esperar: se escribe antes de que el servidor conteste.
+        assert!(p.app.lsp.is_none() && p.app.lsp_arrancando.is_some());
+        ed(&mut p).cursor = editor::Position { line: 0, col: 12 };
+        tipear(&mut p, " // escrito antes");
+        esperar(&mut p, "el arranque", |p| p.app.lsp.is_some());
+        assert!(p.app.buffers[0].ed.status.contains("lsp_falso listo"), "{}", p.app.buffers[0].ed.status);
+        // Lo escrito antes llega en el didOpen, una sola vez: si también se
+        // mandara como cambio, la copia del servidor lo tendría repetido.
+        sincronizar(&mut p);
+        tipear(&mut p, "!");
+        sincronizar(&mut p);
+        assert_eq!(texto(&p), "fn main() {} // escrito antes!\n");
+    }
+
+    #[test]
+    fn un_servidor_que_no_contesta_no_deja_esperando() {
+        let mut p = arrancar("x\n", PathBuf::from("sleep"), Some(vec!["30".to_string()]));
+        p.app.lsp_arrancando.as_mut().unwrap().limite = Instant::now() + Duration::from_millis(100);
+        esperar(&mut p, "el aviso", |p| p.app.lsp_arrancando.is_none());
+        assert!(p.app.lsp.is_none());
+        assert!(p.app.buffers[0].ed.status.contains("no respondió"), "{}", p.app.buffers[0].ed.status);
+    }
+
+    #[test]
+    fn un_servidor_que_se_cae_al_arrancar_se_avisa() {
+        let mut p = arrancar("x\n", PathBuf::from("true"), Some(Vec::new()));
+        esperar(&mut p, "el aviso", |p| p.app.lsp_arrancando.is_none());
+        assert!(p.app.lsp.is_none());
+        assert!(p.app.buffers[0].ed.status.contains("se cerró"), "{}", p.app.buffers[0].ed.status);
     }
 
     #[test]

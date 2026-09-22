@@ -162,6 +162,8 @@ Flint puede tener varios archivos abiertos al mismo tiempo, cada uno con su prop
 - `Ctrl+Q` cierra buffers de a uno; el proceso solo termina cuando se cierra el último. Con varios abiertos, el mensaje de confirmación dice "cerrar este buffer" en vez de "salir", para que quede claro qué se está por perder.
 - Con dos o más buffers abiertos aparece una barra de pestañas (debajo del título) con el nombre de cada archivo — el activo resaltado, y un `•` en los que tienen cambios sin guardar. La barra es clickeable: un clic en una pestaña cambia a ese buffer.
 
+**El servidor arranca sin frenar**: el archivo se ve y se puede editar apenas se abre, mientras la barra dice "Iniciando…". En ese rato todavía no hay diagnósticos ni autocompletado del servidor; cuando contesta, recibe el archivo tal como está, con lo que se haya escrito mientras tanto, y la barra dice qué sabe hacer. Los archivos del mismo lenguaje que se abran en ese rato se suman al quedar listo. Si no contesta en 20 s o se cierra al arrancar, se sigue sin LSP y la barra dice por qué.
+
 **LSP compartido**: si dos o más buffers son del mismo lenguaje (por ejemplo, varios `.rs`), comparten un único proceso de servidor — no se lanza un `rust-analyzer` nuevo por archivo. El servidor solo se ofrece instalar (con el diálogo interactivo) para el primer archivo que lo necesita al arrancar Flint; un buffer de ese mismo lenguaje abierto después con `Ctrl+O` se suma automáticamente a ese servidor si ya está corriendo, y si no, se queda sin LSP (el resaltado de sintaxis vía tree-sitter no depende de esto y sigue funcionando igual).
 
 ## Paleta de comandos (`Ctrl+P`)
