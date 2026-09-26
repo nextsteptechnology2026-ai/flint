@@ -34,8 +34,8 @@ flint --profile emacs archivo.rs       # o Emacs
 flint --theme mi_tema.toml archivo.rs  # con un tema de colores propio
 flint --config mi_config.toml notas.md # con otro archivo de configuración
 flint --actions                        # lista los nombres de acción para [keys]
-flint --help                           # ayuda rápida en la terminal
-flint --version                        # versión instalada
+flint --help                           # ayuda rápida en la terminal (también -h)
+flint --version                        # versión instalada (también -V)
 ```
 
 ## El modelo de edición
@@ -62,6 +62,8 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `Ctrl+T` | Buscador difuso de archivos del proyecto — escribí parte del nombre y `Enter` lo abre |
 | `Ctrl+N` | Buscar texto en todos los archivos del proyecto — `Enter` salta a la coincidencia, `Tab` alterna regex, `Ctrl+R` reemplaza en todos |
 | `F1` | Tipo y documentación de lo que está bajo el cursor (LSP) |
+| `Ctrl+]` o `F12` | Ir a la definición del nombre bajo el cursor (LSP) |
+| `F6` | Renombrar el nombre bajo el cursor en todo el proyecto (LSP) |
 | `Alt+Shift+F` | Formatear el archivo (LSP) |
 | `Alt+←` / `Alt+→` | Volver a donde estabas antes de un salto / rehacer el salto |
 | `Ctrl+K` | Comentar / descomentar las líneas que toca la selección |
@@ -94,6 +96,8 @@ La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplaza
 | `n` | Expandir la selección al nodo de sintaxis que la contiene (repetida, sube un nivel del árbol) |
 | `m` | Saltar al paréntesis, corchete o llave que hace pareja con el de al lado del cursor |
 | `K` | Tipo y documentación de lo que está bajo el cursor (LSP), como en Vim y Helix |
+| `D` | Ir a la definición (LSP) |
+| `r` | Renombrar el nombre bajo el cursor en todo el proyecto (LSP) |
 | `=` | Formatear el archivo (LSP) |
 | `d` | Cortar: borra el rango si hay selección (si no, el carácter siguiente) y lo manda al portapapeles del sistema — se puede pegar después con `p`, o en cualquier otra aplicación |
 | `c` | Cambiar: corta la selección (si hay, igual que `d`) y entra a INSERT |
@@ -162,15 +166,17 @@ Flint puede tener varios archivos abiertos al mismo tiempo, cada uno con su prop
 - `Ctrl+Q` cierra buffers de a uno; el proceso solo termina cuando se cierra el último. Con varios abiertos, el mensaje de confirmación dice "cerrar este buffer" en vez de "salir", para que quede claro qué se está por perder.
 - Con dos o más buffers abiertos aparece una barra de pestañas (debajo del título) con el nombre de cada archivo — el activo resaltado, y un `•` en los que tienen cambios sin guardar. La barra es clickeable: un clic en una pestaña cambia a ese buffer.
 
-**El servidor arranca sin frenar**: el archivo se ve y se puede editar apenas se abre, mientras la barra dice "Iniciando…". En ese rato todavía no hay diagnósticos ni autocompletado del servidor; cuando contesta, recibe el archivo tal como está, con lo que se haya escrito mientras tanto, y la barra dice qué sabe hacer. Los archivos del mismo lenguaje que se abran en ese rato se suman al quedar listo. Si no contesta en 20 s o se cierra al arrancar, se sigue sin LSP y la barra dice por qué.
-
 **LSP compartido**: si dos o más buffers son del mismo lenguaje (por ejemplo, varios `.rs`), comparten un único proceso de servidor — no se lanza un `rust-analyzer` nuevo por archivo. El servidor solo se ofrece instalar (con el diálogo interactivo) para el primer archivo que lo necesita al arrancar Flint; un buffer de ese mismo lenguaje abierto después con `Ctrl+O` se suma automáticamente a ese servidor si ya está corriendo, y si no, se queda sin LSP (el resaltado de sintaxis vía tree-sitter no depende de esto y sigue funcionando igual).
+
+**El servidor arranca sin frenar**: el archivo se ve y se puede editar apenas se abre, mientras la barra dice "Iniciando…". En ese rato todavía no hay diagnósticos ni autocompletado del servidor; cuando contesta, recibe el archivo tal como está, con lo que se haya escrito mientras tanto, y la barra dice qué sabe hacer. Los archivos del mismo lenguaje que se abran en ese rato se suman al quedar listo. Si no contesta en 20 s o se cierra al arrancar, se sigue sin LSP y la barra dice por qué.
 
 ## Paleta de comandos (`Ctrl+P`)
 
 Lista todo lo que Flint sabe hacer, con filtro difuso mientras se escribe (no hace falta el nombre exacto ni el orden exacto de las letras). `↑`/`↓` para moverse, `Enter` para ejecutar, `Esc` para cancelar.
 
-Incluye: Guardar, Salir, Buscar (literal y regex), Reemplazar (literal y regex), Deshacer, Rehacer, Saltar al siguiente diagnóstico, Autocompletar, Alternar capa modal, Alternar ajuste de línea, Seleccionar siguiente aparición, Abrir archivo, Abrir archivo del proyecto, Ir a la línea, Comentar/descomentar, Saltar al par, Grabar y repetir macro, Siguiente/anterior buffer, Cerrar buffer, cambiar de perfil de teclado (Flint/Vim/Emacs), y cualquier comando que un plugin de Lua haya registrado.
+Incluye: Guardar, Salir, Buscar (literal y regex), Reemplazar (literal y regex), Deshacer, Rehacer, Saltar al siguiente diagnóstico, Autocompletar, Alternar capa modal, Alternar ajuste de línea, Vista previa de Markdown, Seleccionar siguiente aparición, Indentar/Des-indentar líneas, Comentar/descomentar, Saltar al par, Abrir archivo, Abrir archivo del proyecto, Buscar texto en el proyecto, Ir a la línea, Ir a la definición, Renombrar el símbolo, Qué es esto (tipo y documentación), Parámetros de la llamada, Formatear el archivo, Volver al lugar anterior / Avanzar al siguiente, Grabar y repetir macro, Siguiente/anterior buffer, Cerrar buffer, cambiar de perfil de teclado (Flint/Vim/Emacs), y cualquier comando que un plugin de Lua haya registrado.
+
+**Ir a la línea** no tiene atajo de fábrica: se abre desde la paleta, o atando `goto_line` a una tecla en `[keys]`. Pide un número de línea y salta ahí (el salto queda en la [lista de saltos](#lista-de-saltos-alt-alt)).
 
 Cada renglón muestra además el **nombre estable** de su acción (`Guardar · save`): es el mismo que se escribe en `[keys]` en `config.toml`, así que la paleta también sirve de referencia para remapear sin salir del editor — y buscar `save` encuentra `Guardar`.
 
@@ -246,7 +252,7 @@ rust = "rust-analyzer"
 python = ["pylsp", "--check-parent-process"]
 ```
 
-La clave es el identificador LSP del lenguaje (`rust`, `python`, `json`, `toml`, `markdown`); el valor, el comando solo o como lista si necesita argumentos. Lo que no esté acá usa el servidor que Flint trae de fábrica para ese lenguaje. Agregar un servidor nuevo es un renglón acá, no un cambio de código.
+La clave es el identificador LSP del lenguaje (`rust`, `python`, `javascript`, `typescript`, `typescriptreact`, `go`, `c`, `cpp`, `java`, `lua`, `shellscript`, `html`, `css`, `yaml`, `json`, `toml`, `markdown`, o el `id` de un lenguaje que traiga un plugin; ver [Lenguajes soportados](#lenguajes-soportados)); el valor, el comando solo o como lista si necesita argumentos. Lo que no esté acá usa el servidor que Flint trae de fábrica para ese lenguaje. Agregar un servidor nuevo es un renglón acá, no un cambio de código.
 
 Flint solo sabe **instalar** `rust-analyzer` (es un componente de `rustup`). Para cualquier otro servidor que falte avisa y sigue sin LSP: adivinar el gestor de paquetes de la máquina sería peor que no ofrecer nada.
 
@@ -827,4 +833,4 @@ primera vez, y después responde igual que uno chico.
 
 ## Más detalles
 
-El `README.md` explica, fase por fase, cómo se construyó cada parte, qué se probó a mano, y la lista completa de limitaciones conocidas (LSP solo para Rust, sin tests automatizados, etc.).
+El `README.md` explica, fase por fase, cómo se construyó cada parte, qué se probó a mano, y la lista de limitaciones conocidas.
