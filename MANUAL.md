@@ -382,12 +382,13 @@ En la misma línea, los caracteres anchos (CJK, emoji) ocupan dos columnas y las
 
 ## Plugins en Lua
 
-Al iniciar, Flint carga todos los `*.lua` que encuentre en estos tres lugares, de mayor a menor precedencia:
+Al iniciar, Flint carga todos los `*.lua` que encuentre en estos lugares, de mayor a menor precedencia:
 
 | Directorio | Para qué |
 |---|---|
 | `./plugins` | Relativo a donde arrancás Flint — para desarrollar dentro del repo |
 | `~/.config/flint/plugins/` | Los tuyos, junto al `theme.toml` |
+| `share/flint/plugins/` del prefijo donde está instalado | Los que instala Homebrew: si el binario está en `/opt/homebrew/bin/`, se busca en `/opt/homebrew/share/flint/plugins/` |
 | `/usr/share/flint/plugins/` | Los que instala el paquete `.deb` |
 
 Si el mismo nombre de archivo aparece en más de uno, se carga solo el del directorio de mayor precedencia — así tu `ejemplo.lua` reemplaza al del sistema en vez de que corran los dos y el comando aparezca duplicado en la paleta.

@@ -82,8 +82,9 @@ class Flint < Formula
   def install
     bin.install "flint"
     doc.install "README.md", "MANUAL.md", "theme.example.toml", "config.example.toml"
-    # Los plugins de ejemplo van donde Flint los busca cuando está
-    # instalado, igual que en el .deb.
+    # Los plugins de ejemplo van al share/ del prefijo: Flint los busca ahí,
+    # al lado de su propio binario (el .deb usa /usr/share, que es lo mismo
+    # para /usr/bin/flint).
     (share/"flint/plugins").install Dir["plugins/*"]
   end
 

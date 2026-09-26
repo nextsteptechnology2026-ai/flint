@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use mlua::{Function, Lua, RegistryKey};
@@ -134,17 +134,35 @@ impl Default for PluginContext {
 ///    desarrollar dentro del repo, y era el único lugar que se miraba antes.
 /// 2. `~/.config/flint/plugins` — los tuyos, junto al `theme.toml` que ya
 ///    vivía ahí.
-/// 3. `/usr/share/flint/plugins` — los que instala el paquete `.deb`.
+/// 3. `<prefijo>/share/flint/plugins`, donde `<prefijo>` es la carpeta de
+///    arriba de la del ejecutable — los que instala Homebrew
+///    (`/opt/homebrew/…`) o cualquier otro prefijo.
+/// 4. `/usr/share/flint/plugins` — los que instala el paquete `.deb`. Para
+///    `/usr/bin/flint` es el mismo que el anterior, y no se repite.
 ///
 /// Mirar solo el primero dejaba los plugins de ejemplo del `.deb` en un
 /// directorio que nadie leía: instalado, Flint nunca cargaba ninguno salvo
-/// que lo arrancaras parado justo en un directorio con `./plugins`.
+/// que lo arrancaras parado justo en un directorio con `./plugins`. Y mirar
+/// solo `/usr/share` dejaba afuera los de Homebrew, que nunca instala ahí.
 pub fn default_dirs() -> Vec<PathBuf> {
+    // Canonicalizado porque Homebrew instala un enlace en bin/ que apunta
+    // al binario de verdad, adentro de su Cellar.
+    let exe = std::env::current_exe().ok().map(|e| e.canonicalize().unwrap_or(e));
+    dirs_de_plugins(std::env::var_os("HOME").map(PathBuf::from), exe)
+}
+
+fn dirs_de_plugins(home: Option<PathBuf>, exe: Option<PathBuf>) -> Vec<PathBuf> {
     let mut dirs = vec![PathBuf::from("plugins")];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join(".config/flint/plugins"));
+    if let Some(home) = home {
+        dirs.push(home.join(".config/flint/plugins"));
     }
-    dirs.push(PathBuf::from("/usr/share/flint/plugins"));
+    if let Some(prefijo) = exe.as_deref().and_then(Path::parent).and_then(Path::parent) {
+        dirs.push(prefijo.join("share/flint/plugins"));
+    }
+    let sistema = PathBuf::from("/usr/share/flint/plugins");
+    if !dirs.contains(&sistema) {
+        dirs.push(sistema);
+    }
     dirs
 }
 
@@ -778,6 +796,29 @@ mod tests {
             "el ejemplo registra varios comandos"
         );
         assert!(!carga.binds.is_empty(), "el ejemplo ata teclas");
+    }
+
+    #[test]
+    fn los_plugins_se_buscan_junto_al_ejecutable() {
+        let home = Some(PathBuf::from("/home/ana"));
+        // Homebrew: el prefijo sale de donde está el binario.
+        let brew = dirs_de_plugins(
+            home.clone(),
+            Some(PathBuf::from("/opt/homebrew/Cellar/flint/0.6.1/bin/flint")),
+        );
+        assert_eq!(
+            brew,
+            [
+                PathBuf::from("plugins"),
+                PathBuf::from("/home/ana/.config/flint/plugins"),
+                PathBuf::from("/opt/homebrew/Cellar/flint/0.6.1/share/flint/plugins"),
+                PathBuf::from("/usr/share/flint/plugins"),
+            ]
+        );
+        // El .deb: el del prefijo ya es /usr/share, y no se repite.
+        let deb = dirs_de_plugins(home, Some(PathBuf::from("/usr/bin/flint")));
+        assert_eq!(deb.iter().filter(|d| d.ends_with("share/flint/plugins")).count(), 1);
+        assert_eq!(deb.last(), Some(&PathBuf::from("/usr/share/flint/plugins")));
     }
 
     #[test]

@@ -47,8 +47,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Una versión fija y no ubuntu-latest, que cambia sola: el .deb se
+          # reproduce compilando en esta misma imagen (reproducible.sh).
           - nombre: x86_64-linux
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             deb: true
           # Runner ARM de GitHub, gratis para repositorios públicos.
           - nombre: aarch64-linux

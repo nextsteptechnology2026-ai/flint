@@ -10,7 +10,8 @@
 #
 # El compilador ya está fijado en rust-toolchain.toml. Lo que queda afuera es
 # el enlazador del sistema: para reproducir exactamente un binario publicado,
-# hay que compilar en la misma imagen que el runner (ubuntu-latest).
+# hay que compilar en la misma imagen que el runner: Ubuntu 24.04, fijada
+# en release.yml.
 
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CARGO_DIR="${CARGO_HOME:-$HOME/.cargo}"

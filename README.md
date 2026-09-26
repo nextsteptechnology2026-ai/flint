@@ -65,7 +65,7 @@ El paquete y los `.tar.gz` son reproducibles: el mismo commit da los mismos byte
 
 Si `apt` responde `fichero no admitido` o `unsupported file`, no es el paquete: `apt` baja privilegios al usuario `_apt`, que no puede entrar a un directorio personal en modo `700`. Se arregla instalando desde una ruta que ese usuario pueda leer (`/tmp`, por ejemplo) o con `sudo dpkg -i`, que no baja privilegios.
 
-**Desde el código** (necesita Rust ≥ 1.85, por la edición 2024):
+**Desde el código** (con la versión de Rust fijada en `rust-toolchain.toml`, que `rustup` instala sola la primera vez):
 
 ```sh
 cargo install --path .        # instala en ~/.cargo/bin
@@ -118,7 +118,7 @@ Lo mínimo para moverse; todo lo demás está en **[MANUAL.md](MANUAL.md)**:
 - **Portapapeles que funciona por SSH**: si no hay servidor gráfico, copiar sale por **OSC 52** hacia la terminal que tenés adelante, en vez de perderse. Configurable (`auto`, `system`, `terminal`, `internal`).
 - **Herramientas de todos los días**: buscador difuso de archivos del proyecto (`Ctrl+T`, con la raíz detectada por `.git`/`Cargo.toml`/…), búsqueda de texto en todo el proyecto mientras escribís (`Ctrl+N`, que incluye lo que está sin guardar), comentar y descomentar bloques con el token del lenguaje (`Ctrl+K`), macros que graban también lo tipeado (`Ctrl+U`/`Ctrl+B`), ir a línea, y cierre automático de pares con el par del cursor resaltado — los delimitadores que están dentro de una cadena o un comentario no cuentan, porque eso lo sabe el árbol de tree-sitter.
 - **No te pisa el trabajo**: si otro proceso tocó el archivo mientras estaba abierto, guardar pregunta antes de sobrescribir; y cada pocos segundos deja un respaldo de lo que está sin guardar en `~/.local/share/flint/backups/`, que se borra solo al guardar.
-- **Tuyo**: temas en `~/.config/flint/theme.toml` que se recargan solos al guardarlos, perfiles de teclado Flint/Vim/Emacs sobre una tabla tecla→acción, y plugins en Lua que registran comandos en la paleta, atan teclas, reaccionan al abrir y al guardar, y pueden traer lenguajes nuevos con su gramática de tree-sitter (se cargan desde `./plugins`, `~/.config/flint/plugins/` y `/usr/share/flint/plugins/`).
+- **Tuyo**: temas en `~/.config/flint/theme.toml` que se recargan solos al guardarlos, perfiles de teclado Flint/Vim/Emacs sobre una tabla tecla→acción, y plugins en Lua que registran comandos en la paleta, atan teclas, reaccionan al abrir y al guardar, y pueden traer lenguajes nuevos con su gramática de tree-sitter (se cargan desde `./plugins`, `~/.config/flint/plugins/` y el `share/flint/plugins/` de donde esté instalado: `/usr/share/…` con el `.deb`, el prefijo de Homebrew con `brew`).
 - **Anchos de pantalla reales**: tabuladores, CJK, emoji y acentos combinantes se miden en columnas de terminal, no en caracteres — el cursor cae donde está el texto.
 
 ## Estado
@@ -127,7 +127,7 @@ Versión 0.6.1: prototipo funcional y en uso, no un 1.0. Lo que falta —y por q
 
 - **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre, tener atajos propios, reaccionar al abrir y al guardar (antes y después) y traer lenguajes nuevos con su gramática de tree-sitter compilada.
 - **LSP**: diagnósticos, autocompletado, hover, ayuda de firmas, formateo, ir a la definición y renombrar. Faltan code actions.
-- **Tests**: 208, incluido el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el cliente LSP de punta a punta, contra un servidor falso (`examples/lsp_falso.rs`): sincronización, diagnósticos, autocompletado, hover, definición y renombre.
+- **Tests**: 209, incluido el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el cliente LSP de punta a punta, contra un servidor falso (`examples/lsp_falso.rs`): sincronización, diagnósticos, autocompletado, hover, definición y renombre.
 
 Afuera a propósito: paneles divididos (las pestañas y tmux cubren el caso) y terminal integrada.
 

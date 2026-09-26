@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Arma dist/flint-<versión>-<plataforma>.tar.gz: el binario suelto, la
-# documentación, el tema de ejemplo y los plugins. Es lo que se publica para
+# documentación, la licencia, el tema y la configuración de ejemplo, y los
+# plugins. Es lo que se publica para
 # todo lo que no instala un .deb.
 #
 # Uso: packaging/tarball.sh <versión> <plataforma>
