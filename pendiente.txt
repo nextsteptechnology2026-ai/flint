@@ -3,12 +3,13 @@ Pendientes de Flint
 Lo terminado no se anota acá: está en el historial de git.
 
 Chicos:
-1. Confirmar que el .deb publicado se reproduce byte a byte. En la 0.6.0 el
-   del runner y uno armado acá tienen el mismo rustc, el mismo enlazador,
-   las mismas fechas y ninguna ruta de máquina; difieren solo por el
-   compilador de C que arma las gramáticas y Lua (GCC 13.3 de Ubuntu 24.04
-   en el runner, GCC 16.2 acá). Falta armarlo dentro de Ubuntu 24.04 (un
-   contenedor) y comparar el sha256.
+1. Confirmar que el .deb publicado se reproduce byte a byte. Desde la 0.6.2
+   el runner es ubuntu-24.04 fijo y build-deb.sh pone todas las fechas en
+   la del commit; con el mismo rustc y sin rutas de máquina, la única
+   diferencia conocida con uno armado acá es el compilador de C que arma
+   las gramáticas y Lua (GCC 13.3 en el runner, GCC 16.2 en Kali). Falta
+   armarlo dentro de un contenedor Ubuntu 24.04 y comparar su sha256 con el
+   del .deb de la 0.6.2.
 
 LSP:
 2. Code actions (arreglos rápidos que propone el servidor). Pedir
@@ -22,7 +23,8 @@ LSP:
 
 Por decidir:
 - Si el CI corre `cargo fmt --check`. Hoy el código no pasa rustfmt: hay
-  311 diferencias en 16 archivos (todo src/ y examples/lsp_falso.rs).
+  315 diferencias en 13 archivos (todo src/ salvo clipboard.rs, y
+  examples/lsp_falso.rs).
   Activarlo obliga a reformatear todo en un solo commit.
 - Paneles divididos adentro de Flint. Hoy no hay, y para ver dos archivos
   a la vez se usan dos Flint en dos paneles de tmux, que cuesta cero. Dos
