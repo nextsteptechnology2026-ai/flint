@@ -63,12 +63,14 @@ format_on_save = true
 wrap = true
 trim_trailing_whitespace = false
 
+# Un Makefile exige tabuladores: esto lo asegura aunque arriba, en
+# [options], se pase indent_with_spaces a true.
 [files."Makefile"]
 indent_with_spaces = false
 
 # Servidores de lenguaje, por identificador LSP del lenguaje. El comando se
 # escribe solo, o como lista si necesita argumentos. Lo que no esté acá usa
-# el servidor que Flint ya trae de fábrica para ese lenguaje (hoy, Rust).
+# el servidor que Flint ya trae de fábrica para ese lenguaje, si tiene uno.
 # La clave es el identificador del lenguaje (el de la tabla del MANUAL), no
 # la extensión. Flint ya arranca solo los que funcionan sin argumentos:
 # rust-analyzer, clangd (C y C++), gopls y lua-language-server. Los de acá
@@ -90,9 +92,11 @@ rust = "rust-analyzer"
 # nombre de cada acción sale de `flint --actions`, y "none" desata la tecla.
 # F2 no es remapeable: es el interruptor de la capa modal.
 [keys]
-"ctrl+s" = "save"
-"ctrl+k" = "select_line"
-# "ctrl+w" = "none"
+# Los dos de acá usan teclas que de fábrica no hacen nada, así que no pisan
+# ningún atajo.
+"ctrl+j" = "goto_line"        # Ir a la línea, que no trae atajo propio
+"alt+s" = "signature_help"    # los parámetros de la llamada, a mano
+# "ctrl+w" = "none"           # desatar Ctrl+W (cerrar buffer)
 
 # Lo mismo para la capa modal NORMAL (la que se prende con F2).
 [modal_keys]
