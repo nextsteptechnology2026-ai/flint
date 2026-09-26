@@ -280,3 +280,49 @@ impl Theme {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_tema_de_ejemplo_carga_entero() {
+        let ruta = Path::new(env!("CARGO_MANIFEST_DIR")).join("theme.example.toml");
+        let (tema, avisos) = Theme::load(&ruta);
+        assert!(avisos.is_empty(), "{avisos:?}");
+
+        // Una clave mal escrita no avisa (serde la ignora) y deja el color
+        // de fábrica: que cada uno cambie es la forma de saber que el
+        // archivo nombra bien todas las claves.
+        let fabrica = Theme::default();
+        let colores = [
+            ("colors.bar_bg", tema.bar_bg, fabrica.bar_bg),
+            ("colors.bar_fg", tema.bar_fg, fabrica.bar_fg),
+            ("colors.text_fg", tema.text_fg, fabrica.text_fg),
+            ("colors.dim", tema.dim, fabrica.dim),
+            ("colors.selection_bg", tema.selection_bg, fabrica.selection_bg),
+            ("colors.selection_fg", tema.selection_fg, fabrica.selection_fg),
+            ("colors.secondary_bg", tema.secondary_bg, fabrica.secondary_bg),
+            ("colors.secondary_fg", tema.secondary_fg, fabrica.secondary_fg),
+            ("colors.popup_bg", tema.popup_bg, fabrica.popup_bg),
+            ("colors.error", tema.error, fabrica.error),
+            ("colors.warning", tema.warning, fabrica.warning),
+            ("colors.hint", tema.hint, fabrica.hint),
+            ("syntax.keyword", tema.syn_keyword, fabrica.syn_keyword),
+            ("syntax.function", tema.syn_function, fabrica.syn_function),
+            ("syntax.type", tema.syn_type, fabrica.syn_type),
+            ("syntax.string", tema.syn_string, fabrica.syn_string),
+            ("syntax.comment", tema.syn_comment, fabrica.syn_comment),
+            ("syntax.number", tema.syn_number, fabrica.syn_number),
+            ("syntax.constant", tema.syn_constant, fabrica.syn_constant),
+            ("syntax.operator", tema.syn_operator, fabrica.syn_operator),
+            ("syntax.punctuation", tema.syn_punctuation, fabrica.syn_punctuation),
+            ("syntax.property", tema.syn_property, fabrica.syn_property),
+            ("syntax.attribute", tema.syn_attribute, fabrica.syn_attribute),
+        ];
+        for (clave, leido, de_fabrica) in colores {
+            assert_ne!(leido, de_fabrica, "{clave} quedó con el color de fábrica");
+        }
+        assert_eq!(tema.cursor_shape, CursorShape::Bar);
+    }
+}

@@ -2,12 +2,15 @@
 # de la ámbar por defecto, para que el cambio se note de un vistazo.
 #
 # Para usarlo:
-#   cargo run -- --theme theme.example.toml archivo.txt
+#   flint --theme theme.example.toml archivo.txt
 # o copiarlo a la ubicación por defecto para que se cargue siempre:
 #   mkdir -p ~/.config/flint && cp theme.example.toml ~/.config/flint/theme.toml
 #
 # Cualquier color que falte o esté mal escrito se queda en su valor por
 # defecto — no hace falta completar el archivo entero.
+#
+# Se recarga en caliente: si se edita y se guarda el tema en uso con Flint
+# abierto, el cambio se ve solo, sin reabrir.
 
 [colors]
 bar_bg = "#161a2e"
@@ -38,8 +41,10 @@ attribute = "#ffcb6b"
 
 [appearance]
 transparent_bars = false
-cursor_style = "bar"
+cursor_style = "bar"       # block | bar | underline
 cursor_blink = true
 # Columnas que ocupa un tabulador al dibujarse (1 a 16). No cambia el
 # archivo: el `\t` sigue siendo un solo carácter, solo se ve más ancho.
+# Si config.toml también define tab_width, gana el de config.toml: esta
+# clave queda en el tema por compatibilidad con los temas que ya la traían.
 tab_width = 4
