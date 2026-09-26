@@ -30,6 +30,9 @@ install -m 755 "$CARGO_TARGET_DIR/release/flint" "$PKG_DIR/usr/bin/flint"
 strip --strip-unneeded "$PKG_DIR/usr/bin/flint"
 
 install -m 644 README.md MANUAL.md theme.example.toml config.example.toml "$PKG_DIR/usr/share/doc/flint/"
+# La MIT pide que el aviso de copyright acompañe cada copia; en Debian ese
+# aviso vive en /usr/share/doc/<paquete>/copyright.
+install -m 644 LICENSE "$PKG_DIR/usr/share/doc/flint/copyright"
 cp -a plugins/. "$PKG_DIR/usr/share/flint/plugins/"
 # Los permisos no pueden depender del umask de quien hizo el checkout.
 find "$PKG_DIR" -type d -exec chmod 755 {} +
@@ -73,13 +76,20 @@ Depends: $DEPENDS
 Maintainer: Next Step Technology SpA <nextsteptechnology2026@gmail.com>
 Description: Editor de terminal con capa modal opcional, LSP y multi-cursor
  Flint arranca en modo directo (paridad con nano) y suma, encima, una capa
- modal opcional estilo Kakoune/Helix (F2), resaltado de sintaxis y LSP real
- via tree-sitter, selecciones multi-cursor, temas configurables, perfiles
- de teclado remapeables (Flint/Vim/Emacs) y soporte para plugins en Lua.
+ modal opcional estilo Kakoune/Helix (F2), resaltado de sintaxis con
+ tree-sitter, cliente LSP (diagnosticos, autocompletado, ir a la definicion,
+ renombrar, formatear), selecciones multi-cursor, temas configurables,
+ perfiles de teclado remapeables (Flint/Vim/Emacs) y plugins en Lua.
  .
- Los plugins de ejemplo y el tema de ejemplo quedan instalados en
- /usr/share/flint/ y /usr/share/doc/flint/ como referencia.
+ El plugin de ejemplo queda en /usr/share/flint/plugins/, y el manual, el
+ tema y la configuracion de ejemplo en /usr/share/doc/flint/.
 EOF
+
+# Todas las fechas, la del commit. dpkg-deb con SOURCE_DATE_EPOCH solo baja
+# las más nuevas que el commit: una más vieja (un archivo que no cambió desde
+# hace días en esta copia del repositorio) se colaría tal cual, y el .deb
+# armado acá ya no daría los mismos bytes que el del runner.
+find "$PKG_DIR" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
 echo "==> Construyendo el .deb…"
 DEB_PATH="$OUT_DIR/${PKG_NAME}_${VERSION}_${ARCH}.deb"
@@ -92,7 +102,26 @@ else
     echo "    (lintian no está instalado — se omite el chequeo, no es obligatorio)"
 fi
 
+# apt lee el paquete como el usuario _apt, sin privilegios: si algún
+# directorio del camino no deja pasar a "otros" (un home en 700, lo normal
+# en Kali), apt dice "fichero no admitido". Ahí se instala desde /tmp.
+LEGIBLE=si
+dir="$OUT_DIR"
+while [ "$dir" != "/" ]; do
+    if [ "$(( 0$(stat -c %a "$dir") & 1 ))" -eq 0 ]; then
+        LEGIBLE=no
+        break
+    fi
+    dir=$(dirname "$dir")
+done
+
 echo
 echo "Listo: $DEB_PATH"
-echo "Instalar con:   sudo apt install ./$(basename "$DEB_PATH")"
+if [ "$LEGIBLE" = si ]; then
+    echo "Instalar con:    sudo apt install $DEB_PATH"
+else
+    echo "Instalar con (apt no puede leer $dir, por eso se pasa por /tmp):"
+    echo "    cp $DEB_PATH /tmp/"
+    echo "    sudo apt install /tmp/$(basename "$DEB_PATH")"
+fi
 echo "Desinstalar con: sudo apt remove flint"

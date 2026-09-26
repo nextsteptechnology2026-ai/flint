@@ -24,7 +24,7 @@ sudo apt remove flint                            # desinstalar
 
 Para publicar una release nueva: subir `version` en `Cargo.toml`, commitear, y empujar una etiqueta `vX.Y.Z` — el workflow `release.yml` compila, corre los tests, arma los dos paquetes y los adjunta solo si la etiqueta coincide con `Cargo.toml`.
 
-El script del `.deb` calcula las dependencias reales del binario (`dpkg-shlibdeps`, no una lista a mano) y deja el `.deb` en `target/deb/`. Instala `flint` en `/usr/bin/`, y el `README.md`/`MANUAL.md`/`theme.example.toml`/`plugins/ejemplo.lua` de referencia en `/usr/share/doc/flint/` y `/usr/share/flint/plugins/`.
+El script del `.deb` calcula las dependencias reales del binario (`dpkg-shlibdeps`, no una lista a mano) y deja el `.deb` en `target/deb/`. Instala `flint` en `/usr/bin/`; el `README.md`, el `MANUAL.md`, los dos `.example.toml` y la licencia (como `copyright`) en `/usr/share/doc/flint/`; y `plugins/ejemplo.lua` en `/usr/share/flint/plugins/`. Si tu carpeta personal no deja pasar a otros usuarios (permisos `700`, lo normal en Kali), `apt` no puede leer el paquete ahí y responde "fichero no admitido": el script lo detecta y te da los comandos para instalarlo desde `/tmp`.
 
 ```sh
 flint                                  # buffer sin nombre
