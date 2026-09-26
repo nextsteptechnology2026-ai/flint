@@ -449,7 +449,7 @@ un plugin puede guardar, buscar, deshacer o abrir la paleta sin que exista un
 ```lua
 flint.bind("f5", "info-archivo")       -- a un comando de este mismo script
 flint.bind("ctrl+j", "goto_line")      -- a una acción de Flint
-flint.bind("g", "fecha", true)         -- en la capa modal NORMAL
+flint.bind("t", "fecha", true)         -- en la capa modal NORMAL
 ```
 
 El destino se busca primero entre los comandos registrados y después entre
@@ -563,7 +563,7 @@ flint.register_command("mayusculas", "Selección a MAYÚSCULAS", function()
     flint.status("Pasado a mayúsculas")
 end)
 
-flint.bind("f6", "mayusculas")
+flint.bind("f7", "mayusculas")      -- F7 está libre; F6 es renombrar
 ```
 
 `plugins/ejemplo.lua` trae este y varios más, y sirve de referencia de la API

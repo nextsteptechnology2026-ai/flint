@@ -779,4 +779,29 @@ mod tests {
         );
         assert!(!carga.binds.is_empty(), "el ejemplo ata teclas");
     }
+
+    #[test]
+    fn el_evento_apagado_del_ejemplo_anda_si_se_prende() {
+        // Viene apagado, así que cargar el ejemplo tal cual nunca lo corre:
+        // sin esto, un error adentro del manejador pasaría desapercibido.
+        let fuente = std::fs::read_to_string("plugins/ejemplo.lua").unwrap();
+        let prendido = fuente.replace("local AVISAR_ESPACIOS = false", "local AVISAR_ESPACIOS = true");
+        assert_ne!(fuente, prendido, "el ejemplo ya no tiene el interruptor");
+        let (carga, dir) = cargar("ejemplo-prendido", &prendido);
+        limpiar(dir);
+        assert!(carga.errors.is_empty(), "{:?}", carga.errors);
+
+        let ctx = PluginContext {
+            text: "uno  \ndos\ntres\t\n".to_string(),
+            ..ctx_de_prueba()
+        };
+        let (efectos, errores) = carga.bridge.emitir(Evento::Guardar, ctx);
+        assert!(errores.is_empty(), "{errores:?}");
+        assert_eq!(
+            textos(&efectos),
+            vec!["status:Guardado · 2 línea(s) con espacios al final"]
+        );
+        let (efectos, _) = carga.bridge.emitir(Evento::Guardar, ctx_de_prueba());
+        assert!(efectos.is_empty(), "sin espacios al final no avisa");
+    }
 }
