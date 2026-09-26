@@ -10,9 +10,20 @@ Chicos:
    en el runner, GCC 16.2 acá). Falta armarlo dentro de Ubuntu 24.04 (un
    contenedor) y comparar el sha256.
 
+LSP:
+2. Code actions (arreglos rápidos que propone el servidor). Pedir
+   textDocument/codeAction en el cursor, mostrar la lista con el mismo
+   popup de la paleta y aplicar el WorkspaceEdit elegido con lo que ya usa
+   el renombre (cambios_de_workspace_edit en main.rs).
+3. Expandir snippets al autocompletar. Hoy se anuncia snippetSupport: false
+   y si llega uno igual se inserta la etiqueta. Faltaría interpretar $1,
+   ${1:nombre} y $0, dejar cada marcador seleccionado y pasar al siguiente
+   con Tab.
+
 Por decidir:
-- Si el CI corre `cargo fmt --check`. Nadie comprobó si el código pasa
-  rustfmt; activarlo sin revisar puede obligar a reformatear todo.
+- Si el CI corre `cargo fmt --check`. Hoy el código no pasa rustfmt: hay
+  311 diferencias en 16 archivos (todo src/ y examples/lsp_falso.rs).
+  Activarlo obliga a reformatear todo en un solo commit.
 - Paneles divididos adentro de Flint. Hoy no hay, y para ver dos archivos
   a la vez se usan dos Flint en dos paneles de tmux, que cuesta cero. Dos
   archivos distintos lado a lado saldrían casi gratis, porque cada buffer

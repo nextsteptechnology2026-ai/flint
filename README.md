@@ -127,7 +127,7 @@ Versión 0.6.0: prototipo funcional y en uso, no un 1.0. Lo que falta —y por q
 
 - **Plugins**: pueden leer y cambiar el buffer, la selección y el portapapeles, ejecutar cualquier acción por nombre, tener atajos propios, reaccionar al abrir y al guardar (antes y después) y traer lenguajes nuevos con su gramática de tree-sitter compilada.
 - **LSP**: diagnósticos, autocompletado, hover, ayuda de firmas, formateo, ir a la definición y renombrar. Faltan code actions.
-- **Tests**: 205, incluido el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar). El cliente LSP de punta a punta todavía se prueba a mano.
+- **Tests**: 205, incluido el ciclo de edición completo (deshacer/rehacer, multi-cursor, buscar y reemplazar) y el cliente LSP de punta a punta, contra un servidor falso (`examples/lsp_falso.rs`): sincronización, diagnósticos, autocompletado, hover, definición y renombre.
 
 Afuera a propósito: paneles divididos (las pestañas y tmux cubren el caso) y terminal integrada.
 
