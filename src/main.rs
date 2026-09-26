@@ -4785,7 +4785,12 @@ mod tests_lsp_de_punta_a_punta {
         let client = lsp::LspClient::spawn(servidor.to_str().unwrap(), &args).unwrap();
         let root = lsp::file_uri(&dir);
         let mut app = app_de_prueba(buffer);
-        app.lsp_arrancando = Some(lanzar_arranque(client, &root, "rust", "lsp_falso").unwrap());
+        // Igual que al abrir un archivo de verdad: si el servidor ya se cayó
+        // antes del primer mensaje, no hay arranque y la barra dice por qué.
+        match lanzar_arranque(client, &root, "rust", "lsp_falso") {
+            Ok(arranque) => app.lsp_arrancando = Some(arranque),
+            Err(e) => app.buffers[0].ed.status = e,
+        }
         Prueba { app, espejo, dir }
     }
 
@@ -4910,7 +4915,13 @@ mod tests_lsp_de_punta_a_punta {
         let mut p = arrancar("x\n", PathBuf::from("true"), Some(Vec::new()));
         esperar(&mut p, "el aviso", |p| p.app.lsp_arrancando.is_none());
         assert!(p.app.lsp.is_none());
-        assert!(p.app.buffers[0].ed.status.contains("se cerró"), "{}", p.app.buffers[0].ed.status);
+        // Según cuándo termine `true`, se nota al mandarle el primer mensaje
+        // o al esperar la respuesta; las dos cosas se avisan.
+        let status = &p.app.buffers[0].ed.status;
+        assert!(
+            status.contains("se cerró") || status.contains("No se pudo hablar"),
+            "{status}"
+        );
     }
 
     #[test]

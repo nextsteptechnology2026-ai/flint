@@ -40,6 +40,25 @@ bajar() {
     fi
 }
 
+# El sha256 de un archivo, o nada si la máquina no tiene con qué calcularlo.
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+# Los plugins de ejemplo tal como salieron en cada release, uno por renglón.
+# Un archivo instalado que sea idéntico a uno de estos no lo tocó nadie, y
+# se puede reemplazar por el de la versión nueva sin perder nada. Al cambiar
+# un plugin de plugins/, su sha256 nuevo va acá: un test lo exige.
+PLUGINS_DISTRIBUIDOS="
+05a82695256b381d4f36f8cf7c2795f2d997a2d6296742512079e06527e33106  ejemplo.lua
+bc6ecbb7370a590f6b05cfd7553e536824cf301ab94a1666d87f8bd9228801bb  ejemplo.lua
+5e78602f8d6f03fe207f930d0e47854776289703121dd010e74d0ff875b6cd1b  ejemplo.lua
+"
+
 # ---------- qué máquina es esta ----------
 
 case "$(uname -s)" in
@@ -107,6 +126,7 @@ fi
 # El sha256 sale del archivo que publica la misma release. No es protección
 # contra GitHub, es protección contra una descarga cortada o un espejo
 # desactualizado.
+VERIFICADO=no
 if bajar "$BASE/sha256sums.txt" "$TMP/sha256sums.txt" 2>/dev/null; then
     # El nombre puede venir pelado, con "./" adelante o con el directorio en
     # el que se calculó (las releases viejas dicen "dist/…"): se acepta
@@ -114,18 +134,18 @@ if bajar "$BASE/sha256sums.txt" "$TMP/sha256sums.txt" 2>/dev/null; then
     # para que "flint-0.2.0-x86_64-linux.tar.gz" no matchee contra otro.
     ESPERADO=$(sed -n "s#^\([0-9a-f]\{64\}\)  *\(.*/\)\{0,1\}$NOMBRE\.tar\.gz\$#\1#p" "$TMP/sha256sums.txt" | head -1)
     if [ -n "$ESPERADO" ]; then
-        if command -v sha256sum >/dev/null 2>&1; then
-            REAL=$(sha256sum "$TMP/$NOMBRE.tar.gz" | cut -d' ' -f1)
-        elif command -v shasum >/dev/null 2>&1; then
-            REAL=$(shasum -a 256 "$TMP/$NOMBRE.tar.gz" | cut -d' ' -f1)
-        else
-            REAL=""
-        fi
+        REAL=$(sha256 "$TMP/$NOMBRE.tar.gz")
         if [ -n "$REAL" ] && [ "$REAL" != "$ESPERADO" ]; then
             error "el sha256 no coincide: esperaba $ESPERADO y bajó $REAL"
         fi
-        [ -n "$REAL" ] && echo "flint: sha256 verificado"
+        if [ -n "$REAL" ]; then
+            echo "flint: sha256 verificado"
+            VERIFICADO=si
+        fi
     fi
+fi
+if [ "$VERIFICADO" = no ]; then
+    echo "flint: ojo, no pude verificar el sha256 (la release no lo publica o no hay sha256sum ni shasum)"
 fi
 
 # ---------- instalar ----------
@@ -135,11 +155,31 @@ mkdir -p "$DESTINO"
 install -m 755 "$TMP/$NOMBRE/flint" "$DESTINO/flint" 2>/dev/null ||
     { cp "$TMP/$NOMBRE/flint" "$DESTINO/flint" && chmod 755 "$DESTINO/flint"; }
 
-# Los plugins de ejemplo, donde Flint los busca para el usuario actual.
-PLUGINS="${XDG_CONFIG_HOME:-$HOME/.config}/flint/plugins"
-if [ -d "$TMP/$NOMBRE/plugins" ] && [ ! -e "$PLUGINS" ]; then
+# Los plugins de ejemplo, donde Flint los busca para el usuario actual. Es
+# siempre ~/.config, sin mirar XDG_CONFIG_HOME, porque Flint tampoco lo mira.
+#
+# Al actualizar, uno que ya estaba se reemplaza solo si sigue idéntico a como
+# lo dejó alguna release; si alguien lo editó, se respeta y se avisa.
+PLUGINS="$HOME/.config/flint/plugins"
+if [ -d "$TMP/$NOMBRE/plugins" ]; then
     mkdir -p "$PLUGINS"
-    cp "$TMP/$NOMBRE/plugins/"*.lua "$PLUGINS/" 2>/dev/null || true
+    for nuevo in "$TMP/$NOMBRE/plugins/"*.lua; do
+        [ -f "$nuevo" ] || continue
+        archivo=$(basename "$nuevo")
+        actual="$PLUGINS/$archivo"
+        if [ ! -e "$actual" ]; then
+            cp "$nuevo" "$actual"
+        elif ! cmp -s "$nuevo" "$actual"; then
+            HASH=$(sha256 "$actual")
+            if [ -n "$HASH" ] && printf '%s\n' "$PLUGINS_DISTRIBUIDOS" | grep -q "^$HASH  $archivo\$"; then
+                cp "$nuevo" "$actual"
+                echo "flint: actualizado el plugin $archivo"
+            else
+                echo "flint: dejé tu $actual como está, porque lo editaste;"
+                echo "       el de esta versión: https://github.com/$REPO/blob/v$VERSION/plugins/$archivo"
+            fi
+        fi
+    done
 fi
 
 echo "flint: instalado en $DESTINO/flint"

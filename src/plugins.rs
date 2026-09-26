@@ -781,6 +781,39 @@ mod tests {
     }
 
     #[test]
+    fn el_instalador_conoce_los_plugins_que_se_distribuyen() {
+        // install.sh reemplaza un plugin viejo solo si es idéntico a uno que
+        // salió en alguna release. Si un plugin cambia y su sha256 no se
+        // suma a esa lista, la release siguiente lo toma por editado a mano
+        // y deja a todos con el viejo.
+        let instalador = std::fs::read_to_string("packaging/install.sh").unwrap();
+        for entrada in std::fs::read_dir("plugins").unwrap() {
+            let ruta = entrada.unwrap().path();
+            if ruta.extension().is_none_or(|e| e != "lua") {
+                continue;
+            }
+            let salida = std::process::Command::new("sha256sum")
+                .arg(&ruta)
+                .output()
+                .or_else(|_| {
+                    std::process::Command::new("shasum")
+                        .args(["-a", "256"])
+                        .arg(&ruta)
+                        .output()
+                })
+                .expect("hace falta sha256sum o shasum");
+            let hash = String::from_utf8(salida.stdout).unwrap();
+            let hash = hash.split_whitespace().next().unwrap();
+            let nombre = ruta.file_name().unwrap().to_str().unwrap();
+            let renglon = format!("{hash}  {nombre}");
+            assert!(
+                instalador.lines().any(|l| l == renglon),
+                "falta \"{renglon}\" en PLUGINS_DISTRIBUIDOS de packaging/install.sh"
+            );
+        }
+    }
+
+    #[test]
     fn el_evento_apagado_del_ejemplo_anda_si_se_prende() {
         // Viene apagado, así que cargar el ejemplo tal cual nunca lo corre:
         // sin esto, un error adentro del manejador pasaría desapercibido.
