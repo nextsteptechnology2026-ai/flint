@@ -61,7 +61,7 @@ bash packaging/build-deb.sh                       # compila y arma el paquete
 sudo apt install ./target/deb/flint_*_amd64.deb
 ```
 
-El paquete y los `.tar.gz` son reproducibles: el mismo commit da los mismos bytes en cualquier ruta y en cualquier fecha. La versión de Rust está fijada en `rust-toolchain.toml`, las rutas de la máquina no quedan dentro del binario, y las fechas de los archivos son la del commit (ver `packaging/reproducible.sh`). Para obtener exactamente el binario publicado hay que compilar además con el mismo enlazador que el runner, o sea dentro de Ubuntu 24.04.
+El paquete y los `.tar.gz` son reproducibles: el mismo commit da los mismos bytes en cualquier ruta y en cualquier fecha. La versión de Rust está fijada en `rust-toolchain.toml`, las rutas de la máquina no quedan dentro del binario, y las fechas de los archivos son la del commit (ver `packaging/reproducible.sh`). Lua se compila desde una copia de `lua-src` que ordena sus archivos, para que el binario no dependa del disco donde se compila (ver `vendor/lua-src/FLINT.md`). Para obtener exactamente el binario publicado hay que compilar además con el mismo compilador de C y el mismo enlazador que el runner, o sea dentro de Ubuntu 24.04 (un contenedor o una máquina virtual) con `bash packaging/build-deb.sh`, y comparar el sha256 del `.deb` con el de `sha256sums.txt` de la release.
 
 Si `apt` responde `fichero no admitido` o `unsupported file`, no es el paquete: `apt` baja privilegios al usuario `_apt`, que no puede entrar a un directorio personal en modo `700`. Se arregla instalando desde una ruta que ese usuario pueda leer (`/tmp`, por ejemplo) o con `sudo dpkg -i`, que no baja privilegios.
 

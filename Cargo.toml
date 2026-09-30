@@ -56,3 +56,9 @@ unicode-width = "0.2.2"
 # árbol, y `tests_oraculo` compara las dos salidas para que ese cambio no
 # altere ni un color. No se compila en el binario.
 tree-sitter-highlight = "0.27.0"
+
+# lua-src compila los .c de Lua en el orden en que los devuelve el sistema de
+# archivos, y eso cambia el binario de un disco a otro. La copia de vendor/
+# los ordena; ver vendor/lua-src/FLINT.md.
+[patch.crates-io]
+lua-src = { path = "vendor/lua-src" }

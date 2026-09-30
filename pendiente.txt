@@ -3,20 +3,20 @@ Pendientes de Flint
 Lo terminado no se anota acá: está en el historial de git.
 
 Chicos:
-1. Confirmar que el .deb publicado se reproduce byte a byte. Desde la 0.6.2
-   el runner es ubuntu-24.04 fijo y build-deb.sh pone todas las fechas en
-   la del commit; con el mismo rustc y sin rutas de máquina, la única
-   diferencia conocida con uno armado acá es el compilador de C que arma
-   las gramáticas y Lua (GCC 13.3 en el runner, GCC 16.2 en Kali). Falta
-   armarlo dentro de un contenedor Ubuntu 24.04 y comparar su sha256 con el
-   del .deb de la 0.6.2.
+1. Confirmar que el .deb publicado de la 0.6.3 se reproduce byte a byte:
+   armarlo en Ubuntu 24.04 como dice el README y comparar su sha256 con el
+   de sha256sums.txt. La 0.6.2 no se reproducía porque lua-src compila los
+   .c en el orden del disco; la 0.6.3 usa vendor/lua-src, que los ordena.
+   Recién esta comparación dice si queda otra diferencia.
+2. Mandar a lua-src el arreglo de ordenar los archivos. Cuando salga una
+   versión que lo traiga, borrar vendor/lua-src y el [patch.crates-io].
 
 LSP:
-2. Code actions (arreglos rápidos que propone el servidor). Pedir
+3. Code actions (arreglos rápidos que propone el servidor). Pedir
    textDocument/codeAction en el cursor, mostrar la lista con el mismo
    popup de la paleta y aplicar el WorkspaceEdit elegido con lo que ya usa
    el renombre (cambios_de_workspace_edit en main.rs).
-3. Expandir snippets al autocompletar. Hoy se anuncia snippetSupport: false
+4. Expandir snippets al autocompletar. Hoy se anuncia snippetSupport: false
    y si llega uno igual se inserta la etiqueta. Faltaría interpretar $1,
    ${1:nombre} y $0, dejar cada marcador seleccionado y pasar al siguiente
    con Tab.

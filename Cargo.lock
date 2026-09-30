@@ -740,8 +740,6 @@ dependencies = [
 [[package]]
 name = "lua-src"
 version = "551.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "087097f9936a7d819bda525b32d6e96f9c54f3d35ff23ff72fc0c1697d2127db"
 dependencies = [
  "cc",
 ]
