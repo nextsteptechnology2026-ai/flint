@@ -59,8 +59,10 @@ jobs:
           - nombre: x86_64-macos
             runner: macos-15-intel
             deb: false
+          # macos-14 ya no existe (la v0.6.4 se canceló por eso): la misma
+          # versión de macOS que el de Intel, que es ARM.
           - nombre: aarch64-macos
-            runner: macos-14
+            runner: macos-15
             deb: false
     env:
       VERSION: ${{ needs.verificar.outputs.version }}
