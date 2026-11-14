@@ -17,28 +17,28 @@
 class Flint < Formula
   desc "Editor de terminal con capa modal opcional, LSP y multi-cursor"
   homepage "https://github.com/nextsteptechnology2026-ai/flint"
-  version "0.6.3"
+  version "0.6.4"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.3/flint-0.6.3-aarch64-macos.tar.gz"
-      sha256 "ae8583bfe84e71749b9f25b1c04fc85139c3536cf3154fcb51b0dae2704c6fe5"
+      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.4/flint-0.6.4-aarch64-macos.tar.gz"
+      sha256 "ea9591e90ba939c68befc3b99aa9e391d0bc75618229199cb52fd50f54e14eab"
     end
     on_intel do
-      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.3/flint-0.6.3-x86_64-macos.tar.gz"
-      sha256 "8faca7bf906e83352b559bd50e418749b5fa619274fb4de77cf85a9cfd8f12a6"
+      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.4/flint-0.6.4-x86_64-macos.tar.gz"
+      sha256 "f4aa57ae50586e34ba2f164198e27f6ea9541e87bad14c02c54a5613840e61ce"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.3/flint-0.6.3-aarch64-linux.tar.gz"
-      sha256 "1729eb71f5714c3a57752767d2a59c1d01f42be816ae2d7d7155cae8d4368be3"
+      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.4/flint-0.6.4-aarch64-linux.tar.gz"
+      sha256 "d0a67211c809b6731fda516b63147d3afa86da5cc4ff3453a0101ea144864e53"
     end
     on_intel do
-      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.3/flint-0.6.3-x86_64-linux.tar.gz"
-      sha256 "7e1fabbf9b6dd0341446eb0284bb727bc51df072a445a2a590d6208e9b8912a1"
+      url "https://github.com/nextsteptechnology2026-ai/flint/releases/download/v0.6.4/flint-0.6.4-x86_64-linux.tar.gz"
+      sha256 "20e33d99fc6e0e41ac70f8812b7af2d829b47ba0d03cec4ab9dbb01b55188220"
     end
   end
 
@@ -52,6 +52,6 @@ class Flint < Formula
   end
 
   test do
-    assert_match "0.6.3", shell_output("#{bin}/flint --version")
+    assert_match "0.6.4", shell_output("#{bin}/flint --version")
   end
 end
