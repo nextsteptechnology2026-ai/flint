@@ -26,7 +26,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use editor::{Editor, Layer, Mode, PromptKind};
 use keymap::{Action, KeyChord};
@@ -50,6 +50,8 @@ enum CommandKind {
 }
 
 struct PaletteEntry {
+    /// Lo que se lee, sin el atajo: el atajo depende del perfil y de los
+    /// remapeos, así que se agrega al mostrar (ver `palette_text`).
     label: String,
     kind: CommandKind,
 }
@@ -147,6 +149,15 @@ struct App {
     lsp_hover: bool,
     lsp_format: bool,
     lsp_firma: bool,
+    lsp_code_action: bool,
+    /// Si el servidor completa una code action con `codeAction/resolve`:
+    /// la lista puede llegar sin las ediciones, que se piden al elegir una.
+    lsp_resolver_accion: bool,
+    /// Las code actions de la lista abierta con Alt+Enter.
+    acciones: Vec<AccionLsp>,
+    /// El último texto de la barra de estado del buffer activo y desde
+    /// cuándo está: los diagnósticos no pisan un aviso recién puesto.
+    aviso_visto: (String, Instant),
     /// La ayuda de firmas abierta, si hay una. No es un modo: se sigue
     /// escribiendo con ella a la vista.
     firma: Option<FirmaAbierta>,
@@ -245,7 +256,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Rehacer", Action::Redo),
         ("Saltar al siguiente diagnóstico", Action::JumpDiagnostic),
         ("Autocompletar", Action::TriggerCompletion),
-        ("Alternar capa modal (F2)", Action::ToggleModalLayer),
+        ("Alternar capa modal", Action::ToggleModalLayer),
         (
             "Seleccionar siguiente aparición (multi-cursor)",
             Action::SelectNextOccurrence,
@@ -255,23 +266,24 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
         ("Buffer anterior", Action::PrevBuffer),
         ("Cerrar buffer", Action::CloseBuffer),
         ("Alternar ajuste de línea", Action::ToggleWrap),
-        ("Vista previa de Markdown (^E)", Action::TogglePreview),
-        ("Indentar líneas (Tab)", Action::InsertTab),
-        ("Des-indentar líneas (Shift+Tab)", Action::Unindent),
-        ("Comentar/descomentar líneas (^K)", Action::ToggleComment),
+        ("Vista previa de Markdown", Action::TogglePreview),
+        ("Indentar líneas", Action::InsertTab),
+        ("Des-indentar líneas", Action::Unindent),
+        ("Comentar/descomentar líneas", Action::ToggleComment),
         ("Saltar al paréntesis/llave que hace pareja", Action::JumpMatchingBracket),
-        ("Abrir archivo del proyecto… (^T)", Action::FindFilePrompt),
-        ("Buscar texto en el proyecto… (^N)", Action::SearchProjectPrompt),
+        ("Abrir archivo del proyecto…", Action::FindFilePrompt),
+        ("Buscar texto en el proyecto…", Action::SearchProjectPrompt),
         ("Ir a la línea…", Action::GotoLinePrompt),
-        ("Ir a la definición (^] o F12)", Action::GotoDefinition),
-        ("Renombrar el símbolo… (F6)", Action::RenamePrompt),
-        ("Qué es esto: tipo y documentación (F1)", Action::Hover),
+        ("Ir a la definición", Action::GotoDefinition),
+        ("Renombrar el símbolo…", Action::RenamePrompt),
+        ("Arreglos rápidos y refactorizaciones…", Action::CodeActions),
+        ("Qué es esto: tipo y documentación", Action::Hover),
         ("Parámetros de la llamada (ayuda de firmas)", Action::SignatureHelp),
-        ("Formatear el archivo (Alt+Shift+F)", Action::Format),
-        ("Volver al lugar anterior (Alt+←)", Action::JumpBack),
-        ("Avanzar al lugar siguiente (Alt+→)", Action::JumpForward),
-        ("Grabar/terminar macro (^U)", Action::MacroRecord),
-        ("Repetir la macro (^B)", Action::MacroPlay),
+        ("Formatear el archivo", Action::Format),
+        ("Volver al lugar anterior", Action::JumpBack),
+        ("Avanzar al lugar siguiente", Action::JumpForward),
+        ("Grabar/terminar macro", Action::MacroRecord),
+        ("Repetir la macro", Action::MacroPlay),
     ];
     // Cada renglón lleva además el nombre estable de su acción: es el mismo
     // que se escribe en `[keys]` en config.toml, así que la paleta sirve de
@@ -280,7 +292,7 @@ fn builtin_palette_entries() -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = items
         .iter()
         .map(|&(label, action)| PaletteEntry {
-            label: format!("{label} · {}", action.name()),
+            label: label.to_string(),
             kind: CommandKind::Builtin(action),
         })
         .collect();
@@ -322,6 +334,7 @@ const HELP_TEXT: &str = concat!(
     "    Ctrl+E  Vista previa de Markdown (solo en .md/.markdown)\n",
     "    Ctrl+] o F12   Ir a la definición (LSP)      F6  Renombrar el símbolo (LSP)\n",
     "    F1      Tipo y documentación de lo que está bajo el cursor (LSP)\n",
+    "    Alt+Enter   Arreglos rápidos y refactorizaciones (LSP)\n",
     "    Alt+Shift+F   Formatear el archivo (LSP; format_on_save lo hace al guardar)\n",
     "    Alt+← / Alt+→   Volver al lugar anterior / avanzar (después de un salto)\n",
     "    Tab / Shift+Tab   Indentar / des-indentar el bloque seleccionado\n",
@@ -592,6 +605,10 @@ fn main() -> io::Result<()> {
         lsp_hover: false,
         lsp_format: false,
         lsp_firma: false,
+        lsp_code_action: false,
+        lsp_resolver_accion: false,
+        acciones: Vec::new(),
+        aviso_visto: (String::new(), Instant::now()),
         firma: None,
         lsp_forzar_sync: false,
         last_was_select_line: false,
@@ -779,6 +796,8 @@ fn atender_arranque_lsp(app: &mut App) {
     app.lsp_hover = caps.hover;
     app.lsp_format = caps.format;
     app.lsp_firma = caps.firma;
+    app.lsp_code_action = caps.code_action;
+    app.lsp_resolver_accion = caps.resolver_accion;
     for idx in 0..app.buffers.len() {
         try_attach_lsp(app, idx);
     }
@@ -794,6 +813,7 @@ fn resumen_de_capacidades(caps: &Capacidades) -> String {
         (caps.hover, "hover"),
         (caps.format, "formato"),
         (caps.firma, "firmas"),
+        (caps.code_action, "arreglos"),
     ]
     .iter()
     .filter(|(si, _)| *si)
@@ -814,6 +834,8 @@ struct Capacidades {
     hover: bool,
     format: bool,
     firma: bool,
+    code_action: bool,
+    resolver_accion: bool,
 }
 
 impl Capacidades {
@@ -833,6 +855,12 @@ impl Capacidades {
             hover: tiene("hoverProvider"),
             format: tiene("documentFormattingProvider"),
             firma: tiene("signatureHelpProvider"),
+            code_action: tiene("codeActionProvider"),
+            resolver_accion: caps
+                .and_then(|c| c.get("codeActionProvider"))
+                .and_then(|c| c.get("resolveProvider"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         }
     }
 }
@@ -928,12 +956,19 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
         sync_lsp_if_needed(app);
         avisar_guardados(app);
         check_theme_reload(app);
+        if app.buffers[app.active].ed.status != app.aviso_visto.0 {
+            app.aviso_visto = (app.buffers[app.active].ed.status.clone(), Instant::now());
+        }
         write_backups(app);
 
         let palette_labels: Vec<String> = match &app.buffers[app.active].ed.mode {
             Mode::Palette { query, .. } => filtered_palette_indices(app, query)
                 .into_iter()
-                .filter_map(|i| app.palette_entries.get(i).map(|e| e.label.clone()))
+                .filter_map(|i| app.palette_entries.get(i).map(|e| palette_text(app, e)))
+                .collect(),
+            Mode::CodeActions { query, .. } => filtered_accion_indices(app, query)
+                .into_iter()
+                .map(|i| app.acciones[i].titulo.clone())
                 .collect(),
             Mode::FilePicker { query, .. } => filtered_file_indices(app, query)
                 .into_iter()
@@ -1072,6 +1107,13 @@ fn handle_lsp_message(app: &mut App, msg: Value) {
         msg.get("method").and_then(Value::as_str).map(str::to_string),
     ) {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        if method == "workspace/applyEdit" {
+            let respuesta = aplicar_edit_del_servidor(app, &params);
+            if let Some(client) = app.lsp.as_mut() {
+                client.respond(id, respuesta);
+            }
+            return;
+        }
         if let Some(client) = app.lsp.as_mut() {
             client.respond_default(id, &method, &params);
         }
@@ -1102,6 +1144,31 @@ fn handle_lsp_message(app: &mut App, msg: Value) {
             }
             Some(lsp::Pending::Rename { nombre }) => {
                 aplicar_renombre(app, &nombre, msg.get("result"), msg.get("error"));
+            }
+            Some(lsp::Pending::CodeActions { buffer, version }) => {
+                mostrar_code_actions(app, buffer, version, msg.get("result"), msg.get("error"));
+            }
+            Some(lsp::Pending::ResolverAccion { buffer, version, titulo }) => {
+                match (msg.get("error"), msg.get("result").filter(|v| !v.is_null())) {
+                    (None, Some(valor)) => {
+                        let accion = AccionLsp { titulo, valor: valor.clone(), buffer, version };
+                        ejecutar_accion(app, accion, true);
+                    }
+                    (error, _) => {
+                        app.buffers[app.active].ed.status =
+                            format!("No se pudo aplicar \"{titulo}\": {}", mensaje_de_error(error));
+                    }
+                }
+            }
+            Some(lsp::Pending::Comando { titulo }) => {
+                if msg.get("error").is_some() {
+                    app.buffers[app.active].ed.status =
+                        format!("\"{titulo}\" falló: {}", mensaje_de_error(msg.get("error")));
+                } else if app.buffers[app.active].ed.status.starts_with("Aplicando") {
+                    // El comando no mandó ninguna edición (o ya se contó
+                    // al llegar): se cierra el aviso de que estaba en curso.
+                    app.buffers[app.active].ed.status = format!("Listo: {titulo}");
+                }
             }
             _ => {}
         }
@@ -1170,14 +1237,66 @@ fn apply_diagnostics(app: &mut App, params: Option<&Value>) {
             end_col,
             severity,
             message,
+            raw: item.clone(),
         });
     }
+    let antes = app.buffers[idx].ed.diagnostics.len();
     let count = diags.len();
     app.buffers[idx].ed.diagnostics = diags;
-    if count > 0 {
-        app.buffers[idx].ed.status = format!("{count} diagnóstico(s) — Ctrl+G para saltar al siguiente");
+    // El servidor vuelve a mandar la lista después de cada cambio, aunque
+    // sea la misma: si la cantidad no cambió, no hay nada nuevo que contar,
+    // y escribirlo taparía lo que dijo lo último que se hizo ("Guardado").
+    if count == antes {
+        return;
+    }
+    let aviso = if count > 0 {
+        format!("{count} diagnóstico(s) — Ctrl+G para saltar al siguiente")
     } else {
-        app.buffers[idx].ed.status = "Sin diagnósticos".to_string();
+        "Sin diagnósticos".to_string()
+    };
+    let reciente = idx == app.active && aviso_reciente(app);
+    let ed = &mut app.buffers[idx].ed;
+    let base = sin_aviso_de_diagnosticos(&ed.status);
+    // Un aviso recién puesto (un renombre, una code action) se queda, y la
+    // cantidad nueva va al lado: es justo lo que ese cambio provocó.
+    ed.status = if reciente && !base.is_empty() {
+        format!("{base} · {aviso}")
+    } else {
+        aviso
+    };
+}
+
+/// Cuánto se considera "recién puesto" un aviso de la barra de estado.
+const AVISO_RECIENTE: Duration = Duration::from_secs(4);
+
+/// Si lo que dice la barra del buffer activo apareció hace poco. El bucle
+/// principal anota cuándo cambió el texto (`aviso_visto`); un texto que
+/// todavía no llegó a anotarse es de este mismo ciclo, así que es nuevo.
+fn aviso_reciente(app: &App) -> bool {
+    let status = &app.buffers[app.active].ed.status;
+    match &app.aviso_visto {
+        (texto, desde) if texto == status => desde.elapsed() < AVISO_RECIENTE,
+        _ => true,
+    }
+}
+
+/// El aviso de la barra sin la parte que pone `apply_diagnostics`: todo, si
+/// es solo eso, o lo que va antes del " · " que la agregó.
+fn sin_aviso_de_diagnosticos(status: &str) -> &str {
+    // Exactamente lo que escribe `apply_diagnostics`: "Sin diagnósticos" o
+    // "<número> diagnóstico(s) — …". Con mirar solo el final, "Guardado · 1
+    // diagnóstico(s) — …" también pasaría por uno.
+    let es_de_diagnosticos = |t: &str| {
+        t == "Sin diagnósticos"
+            || t.strip_suffix(" diagnóstico(s) — Ctrl+G para saltar al siguiente")
+                .is_some_and(|n| n.parse::<usize>().is_ok())
+    };
+    if es_de_diagnosticos(status) {
+        return "";
+    }
+    match status.rsplit_once(" · ") {
+        Some((base, cola)) if es_de_diagnosticos(cola) => base,
+        _ => status,
     }
 }
 
@@ -1388,6 +1507,72 @@ fn cambios_de_workspace_edit(edit: &Value) -> Result<Vec<(String, Vec<Value>)>, 
 /// guardar no es una operación que alguien pueda revisar.
 const MAX_ARCHIVOS_RENOMBRE: usize = 50;
 
+/// Lo que pasó al aplicar un `WorkspaceEdit`, para contarlo en la barra.
+struct EdicionAplicada {
+    tocados: usize,
+    /// Archivos que hubo que abrir para cambiarlos: quedan sin guardar.
+    abiertos: usize,
+    fallados: usize,
+}
+
+impl EdicionAplicada {
+    /// ", 2 sin guardar · 1 sin poder tocar", o vacío si no hay nada que avisar.
+    fn detalle(&self) -> String {
+        let mut s = String::new();
+        if self.abiertos > 0 {
+            s.push_str(&format!(", {} sin guardar", self.abiertos));
+        }
+        if self.fallados > 0 {
+            s.push_str(&format!(" · {} sin poder tocar", self.fallados));
+        }
+        s
+    }
+}
+
+/// Aplica un `WorkspaceEdit` entero: los archivos abiertos se cambian en su
+/// buffer, y los que no, se abren en uno nuevo y quedan sin guardar para
+/// que se puedan revisar. Lo usan el renombre, las code actions y los
+/// `workspace/applyEdit` que manda el servidor. `Err` si no se aplicó nada.
+fn aplicar_workspace_edit(app: &mut App, edit: &Value) -> Result<EdicionAplicada, String> {
+    let cambios = cambios_de_workspace_edit(edit)?;
+    if cambios.is_empty() {
+        return Err("el servidor no devolvió ningún cambio".to_string());
+    }
+    if cambios.len() > MAX_ARCHIVOS_RENOMBRE {
+        return Err(format!(
+            "toca {} archivos, más del tope de {MAX_ARCHIVOS_RENOMBRE}; no lo apliqué",
+            cambios.len()
+        ));
+    }
+
+    let volver_a = app.active;
+    let mut r = EdicionAplicada { tocados: 0, abiertos: 0, fallados: 0 };
+    for (uri, ediciones) in cambios {
+        let idx = match app.buffers.iter().position(|b| b.doc_uri.as_deref() == Some(uri.as_str())) {
+            Some(i) => Some(i),
+            None => match ruta_de_uri(&uri) {
+                Some(ruta) if ruta.exists() => {
+                    let antes = app.buffers.len();
+                    open_file_into_new_buffer(app, ruta.display().to_string());
+                    if app.buffers.len() > antes {
+                        r.abiertos += 1;
+                        Some(app.buffers.len() - 1)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        };
+        match idx {
+            Some(idx) if aplicar_ediciones(&mut app.buffers[idx].ed, &ediciones) => r.tocados += 1,
+            _ => r.fallados += 1,
+        }
+    }
+    app.active = volver_a.min(app.buffers.len().saturating_sub(1));
+    Ok(r)
+}
+
 fn aplicar_renombre(app: &mut App, nombre: &str, result: Option<&Value>, error: Option<&Value>) {
     if let Some(e) = error {
         let msg = e
@@ -1402,72 +1587,267 @@ fn aplicar_renombre(app: &mut App, nombre: &str, result: Option<&Value>, error: 
             "El servidor no devolvió ningún cambio; el nombre no se tocó".to_string();
         return;
     };
-    let cambios = match cambios_de_workspace_edit(edit) {
-        Ok(c) => c,
-        Err(e) => {
-            app.buffers[app.active].ed.status = format!("No se pudo renombrar: {e}");
+    app.buffers[app.active].ed.status = match aplicar_workspace_edit(app, edit) {
+        Ok(r) => format!("Renombrado a \"{nombre}\" en {} archivo(s){}", r.tocados, r.detalle()),
+        Err(e) => format!("No se pudo renombrar: {e}"),
+    };
+}
+
+/// El texto de un error de LSP, o uno genérico si no trae mensaje.
+fn mensaje_de_error(error: Option<&Value>) -> String {
+    error
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("el servidor no dijo por qué")
+        .to_string()
+}
+
+/// Una code action de la lista: el título que se muestra y lo que mandó el
+/// servidor (un `CodeAction` o un `Command` suelto), más de qué buffer y de
+/// qué versión del texto salió.
+struct AccionLsp {
+    titulo: String,
+    valor: Value,
+    buffer: usize,
+    version: u64,
+}
+
+/// Alt+Enter: pide los arreglos y refactorizaciones para la selección, o
+/// para el cursor si no hay selección.
+fn pedir_code_actions(app: &mut App) {
+    if app.lsp.is_some() && !app.lsp_code_action {
+        app.buffers[app.active].ed.status =
+            "El servidor de lenguaje no ofrece arreglos ni refactorizaciones".to_string();
+        return;
+    }
+    let Some((uri, _, _)) = preparar_peticion(app, "Los arreglos rápidos") else {
+        return;
+    };
+    let ed = &app.buffers[app.active].ed;
+    let (rango, diagnosticos) = rango_de_code_actions(ed);
+    let ((l0, c0), (l1, c1)) = rango;
+    let rango_lsp = (
+        (l0, ed.char_col_to_utf16(l0, c0)),
+        (l1, ed.char_col_to_utf16(l1, c1)),
+    );
+    let (buffer, version) = (app.active, ed.content_version);
+    let enviado = app
+        .lsp
+        .as_mut()
+        .map(|c| c.request_code_actions(&uri, rango_lsp, diagnosticos, buffer, version))
+        .transpose();
+    app.buffers[app.active].ed.status = match enviado {
+        Ok(_) => "Buscando arreglos…".to_string(),
+        Err(e) => format!("No pude preguntarle al servidor: {e}"),
+    };
+}
+
+/// El tramo por el que se preguntan los arreglos, en caracteres, y los
+/// diagnósticos que lo tocan tal como los mandó el servidor.
+///
+/// Con selección, es la selección. Sin selección es el cursor, salvo que el
+/// cursor esté en una línea con un diagnóstico pero fuera de él (Ctrl+G
+/// deja el cursor al principio de la línea): ahí se pregunta por el
+/// diagnóstico, que es lo que se quiere arreglar. El servidor solo ofrece
+/// el arreglo de un diagnóstico si el tramo lo toca.
+/// Un tramo de texto: (línea, columna) de inicio y de fin.
+type Tramo = ((usize, usize), (usize, usize));
+
+fn rango_de_code_actions(ed: &Editor) -> (Tramo, Vec<Value>) {
+    let cursor = (ed.cursor.line, ed.cursor.col);
+    let (mut a, mut b) = match ed.selection_anchor {
+        Some(anc) => {
+            let anc = (anc.line, anc.col);
+            (anc.min(cursor), anc.max(cursor))
+        }
+        None => (cursor, cursor),
+    };
+    let inicio = |d: &editor::Diagnostic| (d.line, d.start_col);
+    let fin = |d: &editor::Diagnostic| (d.end_line, d.end_col);
+    if ed.selection_anchor.is_none() && !ed.diagnostics.iter().any(|d| inicio(d) <= cursor && cursor <= fin(d))
+        && let Some(d) = ed.diagnostics.iter().find(|d| d.line <= cursor.0 && cursor.0 <= d.end_line)
+    {
+        a = inicio(d);
+        b = fin(d);
+    }
+    let diagnosticos = ed
+        .diagnostics
+        .iter()
+        .filter(|d| inicio(d) <= b && a <= fin(d))
+        .map(|d| d.raw.clone())
+        .collect();
+    ((a, b), diagnosticos)
+}
+
+/// La respuesta a `textDocument/codeAction`: abre la lista para elegir.
+fn mostrar_code_actions(app: &mut App, buffer: usize, version: u64, result: Option<&Value>, error: Option<&Value>) {
+    if error.is_some() {
+        app.buffers[app.active].ed.status =
+            format!("El servidor no pudo buscar arreglos: {}", mensaje_de_error(error));
+        return;
+    }
+    // Si mientras tanto se cambió de buffer, se editó o se abrió otra
+    // ventana, la lista ya no corresponde a lo que se está mirando.
+    let vigente = buffer == app.active
+        && app.buffers.get(buffer).is_some_and(|b| b.ed.content_version == version)
+        && matches!(app.buffers[app.active].ed.mode, Mode::Editing);
+    if !vigente {
+        return;
+    }
+    let mut acciones: Vec<(bool, AccionLsp)> = result
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        // `disabled` trae el motivo por el que no se puede (p. ej. "la
+        // selección no es una expresión"): no hay nada que elegir ahí.
+        .filter(|v| v.get("disabled").is_none())
+        .filter_map(|v| {
+            let titulo = v.get("title").and_then(Value::as_str)?.to_string();
+            let preferida = v.get("isPreferred").and_then(Value::as_bool).unwrap_or(false);
+            Some((preferida, AccionLsp { titulo, valor: v.clone(), buffer, version }))
+        })
+        .collect();
+    if acciones.is_empty() {
+        app.buffers[app.active].ed.status = "No hay arreglos ni refactorizaciones acá".to_string();
+        return;
+    }
+    // La que el servidor marca como el arreglo obvio va primero, para que
+    // Alt+Enter, Enter la aplique. El resto, en el orden del servidor.
+    acciones.sort_by_key(|(preferida, _)| !preferida);
+    app.acciones = acciones.into_iter().map(|(_, a)| a).collect();
+    app.buffers[app.active].ed.mode = Mode::CodeActions { query: String::new(), selected: 0 };
+}
+
+fn filtered_accion_indices(app: &App, query: &str) -> Vec<usize> {
+    let mut scored: Vec<(i32, usize)> = app
+        .acciones
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| fuzzy_score(query, &a.titulo).map(|s| (s, i)))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, i)| i).collect()
+}
+
+fn handle_code_actions_key(app: &mut App, key: KeyEvent) {
+    let (mut query, mut selected) = match std::mem::replace(&mut app.buffers[app.active].ed.mode, Mode::Editing) {
+        Mode::CodeActions { query, selected } => (query, selected),
+        other => {
+            app.buffers[app.active].ed.mode = other;
             return;
         }
     };
-    if cambios.is_empty() {
-        app.buffers[app.active].ed.status = "El servidor no devolvió ningún cambio".to_string();
+    let filtradas = filtered_accion_indices(app, &query);
+    match key.code {
+        KeyCode::Esc => {
+            app.acciones.clear();
+            app.buffers[app.active].ed.status = "Cancelado".to_string();
+            return;
+        }
+        KeyCode::Enter | KeyCode::Tab => {
+            if let Some(&i) = filtradas.get(selected) {
+                let accion = app.acciones.swap_remove(i);
+                app.acciones.clear();
+                ejecutar_accion(app, accion, false);
+                return;
+            }
+        }
+        KeyCode::Up => selected = selected.checked_sub(1).unwrap_or(filtradas.len().saturating_sub(1)),
+        KeyCode::Down if !filtradas.is_empty() => selected = (selected + 1) % filtradas.len(),
+        KeyCode::Backspace => {
+            query.pop();
+            selected = 0;
+        }
+        KeyCode::Char(c) => {
+            query.push(c);
+            selected = 0;
+        }
+        _ => {}
+    }
+    app.buffers[app.active].ed.mode = Mode::CodeActions { query, selected };
+}
+
+/// Aplica la code action elegida. Puede traer una edición, un comando, las
+/// dos cosas (primero la edición) o ninguna todavía: entonces se le pide al
+/// servidor con `codeAction/resolve`, y al volver se llama de nuevo con
+/// `resuelta` en true para no preguntar dos veces.
+fn ejecutar_accion(app: &mut App, accion: AccionLsp, resuelta: bool) {
+    let AccionLsp { titulo, valor, buffer, version } = accion;
+    // Un `Command` suelto (la forma vieja) trae `command` como texto; en un
+    // `CodeAction`, `command` es un objeto con su propio `command` adentro.
+    if valor.get("command").is_some_and(Value::is_string) {
+        ejecutar_comando(app, &valor, titulo);
         return;
     }
-    if cambios.len() > MAX_ARCHIVOS_RENOMBRE {
-        app.buffers[app.active].ed.status = format!(
-            "El renombre toca {} archivos, más del tope de {MAX_ARCHIVOS_RENOMBRE}; no lo apliqué",
-            cambios.len()
-        );
-        return;
-    }
-
-    let volver_a = app.active;
-    let mut tocados = 0usize;
-    let mut abiertos = 0usize;
-    let mut fallados: Vec<String> = Vec::new();
-
-    for (uri, ediciones) in cambios {
-        let idx = match app.buffers.iter().position(|b| b.doc_uri.as_deref() == Some(uri.as_str())) {
-            Some(i) => Some(i),
-            None => match ruta_de_uri(&uri) {
-                Some(ruta) if ruta.exists() => {
-                    let antes = app.buffers.len();
-                    open_file_into_new_buffer(app, ruta.display().to_string());
-                    if app.buffers.len() > antes {
-                        abiertos += 1;
-                        Some(app.buffers.len() - 1)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            },
-        };
-        let Some(idx) = idx else {
-            fallados.push(uri);
-            continue;
-        };
-        if aplicar_ediciones(&mut app.buffers[idx].ed, &ediciones) {
-            tocados += 1;
+    let edit = valor.get("edit").filter(|e| !e.is_null());
+    let comando = valor.get("command").filter(|c| c.is_object());
+    if edit.is_none() && comando.is_none() {
+        if !resuelta && app.lsp_resolver_accion {
+            let enviado = app
+                .lsp
+                .as_mut()
+                .map(|c| c.request_resolve_code_action(&valor, buffer, version, titulo.clone()))
+                .transpose();
+            app.buffers[app.active].ed.status = match enviado {
+                Ok(_) => format!("Aplicando \"{titulo}\"…"),
+                Err(e) => format!("No pude preguntarle al servidor: {e}"),
+            };
         } else {
-            fallados.push(uri);
+            app.buffers[app.active].ed.status = format!("\"{titulo}\" no trae ningún cambio");
+        }
+        return;
+    }
+    if let Some(edit) = edit {
+        // Las posiciones de la edición son del texto de cuando se pidió la
+        // lista; si cambió, caerían en cualquier lado.
+        if app.buffers.get(buffer).is_none_or(|b| b.ed.content_version != version) {
+            app.buffers[app.active].ed.status =
+                format!("El texto cambió desde que se pidió \"{titulo}\"; vuelve a pedirlo con Alt+Enter");
+            return;
+        }
+        app.buffers[app.active].ed.status = match aplicar_workspace_edit(app, edit) {
+            Ok(r) if r.tocados > 1 => format!("{titulo} — {} archivos{}", r.tocados, r.detalle()),
+            Ok(r) => format!("{titulo}{}", r.detalle()),
+            Err(e) => format!("No se pudo aplicar \"{titulo}\": {e}"),
+        };
+    }
+    if let Some(comando) = comando {
+        // Después de la edición: el servidor la da por aplicada al correrlo.
+        sync_lsp_ahora(app);
+        ejecutar_comando(app, comando, titulo);
+    }
+}
+
+fn ejecutar_comando(app: &mut App, comando: &Value, titulo: String) {
+    let enviado = app
+        .lsp
+        .as_mut()
+        .map(|c| c.execute_command(comando, titulo.clone()))
+        .transpose();
+    app.buffers[app.active].ed.status = match enviado {
+        Ok(_) => format!("Aplicando \"{titulo}\"…"),
+        Err(e) => format!("No pude preguntarle al servidor: {e}"),
+    };
+}
+
+/// `workspace/applyEdit`: el servidor pide aplicar una edición (casi siempre
+/// como parte de un comando que se le mandó). Devuelve la respuesta que
+/// espera, con `applied` en false y el motivo si no se pudo.
+fn aplicar_edit_del_servidor(app: &mut App, params: &Value) -> Value {
+    let titulo = params.get("label").and_then(Value::as_str).unwrap_or("Cambio del servidor").to_string();
+    let Some(edit) = params.get("edit") else {
+        return json!({ "applied": false, "failureReason": "falta edit" });
+    };
+    match aplicar_workspace_edit(app, edit) {
+        Ok(r) => {
+            app.buffers[app.active].ed.status = format!("{titulo}{}", r.detalle());
+            json!({ "applied": r.tocados > 0 })
+        }
+        Err(e) => {
+            app.buffers[app.active].ed.status = format!("No se pudo aplicar \"{titulo}\": {e}");
+            json!({ "applied": false, "failureReason": e })
         }
     }
-
-    app.active = volver_a.min(app.buffers.len().saturating_sub(1));
-    let sin_guardar = if abiertos > 0 {
-        format!(", {abiertos} sin guardar")
-    } else {
-        String::new()
-    };
-    let con_error = if fallados.is_empty() {
-        String::new()
-    } else {
-        format!(" · {} sin poder tocar", fallados.len())
-    };
-    app.buffers[app.active].ed.status = format!(
-        "Renombrado a \"{nombre}\" en {tocados} archivo(s){sin_guardar}{con_error}"
-    );
 }
 
 /// Aplica una lista de `TextEdit` a un buffer, de atrás para adelante.
@@ -2142,6 +2522,7 @@ fn handle_key(app: &mut App, key: KeyEvent, page_size: usize) {
         Mode::FilePicker { .. } => handle_file_picker_key(app, key),
         Mode::ProjectSearch { .. } => handle_project_search_key(app, key),
         Mode::Hover { .. } => handle_hover_key(app, key, page_size),
+        Mode::CodeActions { .. } => handle_code_actions_key(app, key),
     }
 }
 
@@ -2490,6 +2871,7 @@ fn execute_action(app: &mut App, action: Action, page_size: usize) {
         Action::JumpBack => saltar_en_la_lista(app, true),
         Action::JumpForward => saltar_en_la_lista(app, false),
         Action::RenamePrompt => rename_prompt(app),
+        Action::CodeActions => pedir_code_actions(app),
         Action::ToggleComment => toggle_comment(app),
         Action::ToggleWrap => {
             let ed = &mut app.buffers[app.active].ed;
@@ -2640,12 +3022,40 @@ fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     if qi == q.len() { Some(score) } else { None }
 }
 
+/// El renglón de la paleta tal como se ve: `Guardar (^S) · save`. El atajo
+/// sale del keymap activo, así que sigue al perfil elegido y a los remapeos
+/// de `[keys]` en vez de quedar escrito a mano en la etiqueta.
+fn palette_text(app: &App, e: &PaletteEntry) -> String {
+    let (teclas, nombre) = match e.kind {
+        CommandKind::Builtin(action) => (keymap::keys_for(&app.keymap, action), Some(action.name())),
+        CommandKind::Plugin(i) => {
+            let mut v: Vec<String> = app
+                .plugin_keys
+                .iter()
+                .filter(|&(&(_, modal), &idx)| idx == i && !modal)
+                .map(|(&(chord, _), _)| keymap::chord_label(&chord))
+                .collect();
+            v.sort();
+            (v, None)
+        }
+        CommandKind::SwitchProfile(_) => (Vec::new(), None),
+    };
+    let mut s = e.label.clone();
+    if !teclas.is_empty() {
+        s.push_str(&format!(" ({})", teclas.join(" o ")));
+    }
+    if let Some(n) = nombre {
+        s.push_str(&format!(" · {n}"));
+    }
+    s
+}
+
 fn filtered_palette_indices(app: &App, query: &str) -> Vec<usize> {
     let mut scored: Vec<(i32, usize)> = app
         .palette_entries
         .iter()
         .enumerate()
-        .filter_map(|(i, e)| fuzzy_score(query, &e.label).map(|s| (s, i)))
+        .filter_map(|(i, e)| fuzzy_score(query, &palette_text(app, e)).map(|s| (s, i)))
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, i)| i).collect()
@@ -4316,6 +4726,10 @@ fn app_de_prueba(buffer: Buffer) -> App {
         lsp_hover: false,
         lsp_format: false,
         lsp_firma: false,
+        lsp_code_action: false,
+        lsp_resolver_accion: false,
+        acciones: Vec::new(),
+        aviso_visto: (String::new(), Instant::now()),
         firma: None,
         lsp_forzar_sync: false,
         last_was_select_line: false,
@@ -4351,6 +4765,73 @@ fn app_de_prueba(buffer: Buffer) -> App {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Los diagnósticos llegan después de cada cambio aunque sean los
+    /// mismos: no pueden borrar lo que dijo lo último que se hizo.
+    #[test]
+    fn los_diagnosticos_no_tapan_el_aviso_de_lo_ultimo_que_se_hizo() {
+        let mut app = app_de_prueba(Buffer::open(None).unwrap());
+        app.buffers[0].doc_uri = Some("file:///a.rs".to_string());
+        let error = json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+                           "message": "x"});
+        let publicar = |app: &mut App, lista: Vec<Value>| {
+            apply_diagnostics(app, Some(&json!({"uri": "file:///a.rs", "diagnostics": lista})));
+        };
+        let status = |app: &App| app.buffers[0].ed.status.clone();
+
+        // La misma cantidad que había: la barra queda como estaba.
+        app.buffers[0].ed.status = "Guardado".to_string();
+        publicar(&mut app, Vec::new());
+        assert_eq!(status(&app), "Guardado");
+
+        // Cambió la cantidad justo después de un aviso: van los dos.
+        publicar(&mut app, vec![error.clone()]);
+        assert_eq!(status(&app), "Guardado · 1 diagnóstico(s) — Ctrl+G para saltar al siguiente");
+        // Y si vuelve a cambiar, se reemplaza la cantidad, no se apila.
+        publicar(&mut app, Vec::new());
+        assert_eq!(status(&app), "Guardado · Sin diagnósticos");
+
+        // Un aviso viejo ya cumplió: la cantidad nueva lo reemplaza.
+        app.buffers[0].ed.status = "Guardado".to_string();
+        app.aviso_visto = ("Guardado".to_string(), Instant::now() - AVISO_RECIENTE * 2);
+        publicar(&mut app, vec![error]);
+        assert_eq!(status(&app), "1 diagnóstico(s) — Ctrl+G para saltar al siguiente");
+    }
+
+    /// La paleta muestra el atajo que de verdad dispara cada comando: el del
+    /// perfil activo, con los remapeos ya aplicados.
+    #[test]
+    fn la_paleta_muestra_el_atajo_del_keymap_activo() {
+        let mut app = app_de_prueba(Buffer::open(None).unwrap());
+        let texto = |app: &App, accion: Action| {
+            let e = app
+                .palette_entries
+                .iter()
+                .find(|e| matches!(e.kind, CommandKind::Builtin(a) if a == accion))
+                .unwrap();
+            palette_text(app, e)
+        };
+        if std::env::var_os("FLINT_VER_PALETA").is_some() {
+            for e in &app.palette_entries {
+                eprintln!("{}", palette_text(&app, e));
+            }
+        }
+        assert_eq!(texto(&app, Action::Save), "Guardar (^S) · save");
+        assert_eq!(texto(&app, Action::TriggerCompletion), "Autocompletar (^Espacio) · complete");
+        assert_eq!(texto(&app, Action::GotoDefinition), "Ir a la definición (^] o F12) · goto_definition");
+        assert_eq!(texto(&app, Action::ToggleModalLayer), "Alternar capa modal (F2) · toggle_modal");
+        assert_eq!(texto(&app, Action::Format), "Formatear el archivo (Alt+Shift+F) · format");
+        assert_eq!(texto(&app, Action::Unindent), "Des-indentar líneas (Shift+Tab) · unindent");
+        assert_eq!(texto(&app, Action::GotoLinePrompt), "Ir a la línea… · goto_line");
+
+        app.keymap = keymap::emacs_profile();
+        assert_eq!(texto(&app, Action::Save), "Guardar (^X ^S) · save");
+        assert_eq!(texto(&app, Action::SearchPrompt), "Buscar… (^F o ^S) · search");
+
+        keymap::rebind_direct(&mut app.keymap, keymap::parse_chord("ctrl+e").unwrap(), Some(Action::Save));
+        assert_eq!(texto(&app, Action::Save), "Guardar (^E o ^X ^S) · save");
+        assert_eq!(texto(&app, Action::TogglePreview), "Vista previa de Markdown · toggle_preview");
+    }
 
     /// Las tres formas en que un servidor dice qué insertar. Las dos
     /// primeras son respuestas reales, recortadas: `pylsp` (jedi) y
@@ -4993,6 +5474,77 @@ mod tests_lsp_de_punta_a_punta {
         dispatch_action(&mut p.app, Action::Undo, 10);
         assert_eq!(texto(&p), "fn uno() {}\nfn main() { uno(); uno(); }\n");
         sincronizar(&mut p);
+    }
+
+    /// Abre la lista de arreglos y devuelve los títulos que muestra.
+    fn pedir_arreglos(p: &mut Prueba) -> Vec<String> {
+        sincronizar(p);
+        dispatch_action(&mut p.app, Action::CodeActions, 10);
+        esperar(p, "la lista de arreglos", |p| matches!(p.app.buffers[0].ed.mode, Mode::CodeActions { .. }));
+        p.app.acciones.iter().map(|a| a.titulo.clone()).collect()
+    }
+
+    #[test]
+    fn el_arreglo_de_un_diagnostico_va_primero_y_se_aplica() {
+        let mut p = abrir("fn main() {\n    let x = ERROR;\n}\n");
+        esperar(&mut p, "el diagnóstico", |p| !p.app.buffers[0].ed.diagnostics.is_empty());
+        // Como deja Ctrl+G: al principio de la línea, fuera del diagnóstico.
+        // Igual tiene que preguntar por él, o no habría arreglo.
+        dispatch_action(&mut p.app, Action::JumpDiagnostic, 10);
+        let titulos = pedir_arreglos(&mut p);
+        assert_eq!(titulos, ["Cambiar ERROR por ok", "Poner en mayúsculas", "Borrar la línea"]);
+        tecla(&mut p, KeyCode::Enter);
+        assert_eq!(texto(&p), "fn main() {\n    let x = ok;\n}\n");
+        assert!(matches!(p.app.buffers[0].ed.mode, Mode::Editing));
+        dispatch_action(&mut p.app, Action::Undo, 10);
+        assert_eq!(texto(&p), "fn main() {\n    let x = ERROR;\n}\n");
+        sincronizar(&mut p);
+    }
+
+    #[test]
+    fn un_arreglo_sin_edicion_se_completa_con_resolve() {
+        let mut p = abrir("fn main() {\n    hola();\n}\n");
+        ed(&mut p).cursor = editor::Position { line: 1, col: 5 };
+        let titulos = pedir_arreglos(&mut p);
+        assert_eq!(titulos, ["Poner en mayúsculas", "Borrar la línea"]);
+        // Se filtra escribiendo, como en la paleta.
+        for c in "mayus".chars() {
+            tecla(&mut p, KeyCode::Char(c));
+        }
+        tecla(&mut p, KeyCode::Enter);
+        esperar(&mut p, "el resolve", |p| p.app.buffers[0].ed.rope.to_string().contains("HOLA"));
+        assert_eq!(texto(&p), "fn main() {\n    HOLA();\n}\n");
+        sincronizar(&mut p);
+    }
+
+    #[test]
+    fn un_arreglo_que_es_un_comando_vuelve_como_apply_edit() {
+        let mut p = abrir("uno\ndos\ntres\n");
+        ed(&mut p).cursor = editor::Position { line: 1, col: 1 };
+        pedir_arreglos(&mut p);
+        tecla(&mut p, KeyCode::Down);
+        tecla(&mut p, KeyCode::Enter);
+        esperar(&mut p, "el applyEdit", |p| p.app.buffers[0].ed.rope == "uno\ntres\n");
+        // Lo primero que llega es el applyEdit, y su aviso reemplaza al de
+        // "Aplicando…". Después llega la respuesta al comando.
+        assert_eq!(p.app.buffers[0].ed.status, "Línea borrada");
+        esperar(&mut p, "el fin del comando", |p| p.app.lsp.as_ref().is_some_and(|c| c.pending.is_empty()));
+        assert!(!p.app.buffers[0].ed.status.starts_with("Aplicando"), "{}", p.app.buffers[0].ed.status);
+        sincronizar(&mut p);
+    }
+
+    #[test]
+    fn la_lista_no_se_abre_si_el_texto_cambio_mientras_tanto() {
+        let mut p = abrir("fn main() {}\n");
+        sincronizar(&mut p);
+        dispatch_action(&mut p.app, Action::CodeActions, 10);
+        tipear(&mut p, "x");
+        sincronizar(&mut p);
+        // Hasta que la respuesta se haya atendido de verdad: sin esto, el
+        // test pasaría también si todavía no llegó.
+        esperar(&mut p, "la respuesta", |p| p.app.lsp.as_ref().is_some_and(|c| c.pending.is_empty()));
+        assert!(matches!(p.app.buffers[0].ed.mode, Mode::Editing));
+        assert!(p.app.acciones.is_empty());
     }
 
     #[test]

@@ -12,11 +12,7 @@ Chicos:
    versión que lo traiga, borrar vendor/lua-src y el [patch.crates-io].
 
 LSP:
-3. Code actions (arreglos rápidos que propone el servidor). Pedir
-   textDocument/codeAction en el cursor, mostrar la lista con el mismo
-   popup de la paleta y aplicar el WorkspaceEdit elegido con lo que ya usa
-   el renombre (cambios_de_workspace_edit en main.rs).
-4. Expandir snippets al autocompletar. Hoy se anuncia snippetSupport: false
+3. Expandir snippets al autocompletar. Hoy se anuncia snippetSupport: false
    y si llega uno igual se inserta la etiqueta. Faltaría interpretar $1,
    ${1:nombre} y $0, dejar cada marcador seleccionado y pasar al siguiente
    con Tab.
@@ -26,19 +22,13 @@ Por decidir:
   315 diferencias en 13 archivos (todo src/ salvo clipboard.rs, y
   examples/lsp_falso.rs).
   Activarlo obliga a reformatear todo en un solo commit.
-- Paneles divididos adentro de Flint. Hoy no hay, y para ver dos archivos
-  a la vez se usan dos Flint en dos paneles de tmux, que cuesta cero. Dos
-  archivos distintos lado a lado saldrían casi gratis, porque cada buffer
-  ya trae su propio scroll; lo que obliga a la refactorización grande es el
-  mismo archivo en dos paneles: ahí el scroll (row_offset, row_sub_offset,
-  col_offset) tiene que pasar del Editor a una struct de vista, y ui.rs
-  deja de asumir un solo viewport. Es la única refactorización grande que
-  queda. Antecedente: la vista previa de Markdown reemplaza el área de
-  texto en vez de partirla, porque en 80 columnas quedan 38 por lado y no
-  se lee ninguna.
 
 Descartado a propósito (no proponer de nuevo sin un motivo nuevo):
 - Terminal integrada: tmux ya lo resuelve.
+- Paneles divididos: dos Flint en dos paneles de tmux, explicado en
+  MANUAL.md ("Ver dos archivos a la vez"). Hacerlos adentro obligaría a
+  sacar el scroll del Editor a una struct de vista y a que ui.rs deje de
+  asumir un solo viewport, para algo que tmux ya da gratis.
 - Gestor de plugins: no hace falta mientras haya pocos plugins; se copian
   a ~/.config/flint/plugins/.
 - Los ~130 lenguajes de micro: hay 17 con tree-sitter. Agregar uno es una

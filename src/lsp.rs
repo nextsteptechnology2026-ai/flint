@@ -49,6 +49,24 @@ pub enum Pending {
         buffer: usize,
         linea: usize,
     },
+    /// "Arreglos rápidos y refactorizaciones" (code actions) en un tramo.
+    /// `version` es la del contenido al pedirlas: si el texto cambió antes
+    /// de que lleguen, sus ediciones apuntan a un documento que ya no existe
+    /// y se descartan.
+    CodeActions {
+        buffer: usize,
+        version: u64,
+    },
+    /// Una code action que llegó sin la edición (el servidor la calcula
+    /// recién cuando se elige, con `codeAction/resolve`).
+    ResolverAccion {
+        buffer: usize,
+        version: u64,
+        titulo: String,
+    },
+    /// `workspace/executeCommand`: lo que haga el comando llega aparte, como
+    /// un `workspace/applyEdit` del servidor; la respuesta solo dice si falló.
+    Comando { titulo: String },
     /// "Formatear". La respuesta se espera en el momento (ver
     /// `formatear_ahora` en main): si llega tarde, después de haberse
     /// guardado sin formatear, se descarta.
@@ -193,7 +211,10 @@ impl LspClient {
                     // Sin esto, un servidor puede contestar un renombre en la
                     // forma vieja (`changes`) o negarse a mandar la nueva
                     // (`documentChanges`). Flint entiende las dos.
-                    "workspaceEdit": { "documentChanges": true }
+                    "workspaceEdit": { "documentChanges": true },
+                    // Los comandos de una code action suelen terminar en un
+                    // `workspace/applyEdit` del servidor hacia Flint.
+                    "applyEdit": true
                 },
                 "textDocument": {
                     "synchronization": { "didSave": true },
@@ -216,7 +237,26 @@ impl LspClient {
                             "activeParameterSupport": true
                         }
                     },
-                    "formatting": { "dynamicRegistration": false }
+                    "formatting": { "dynamicRegistration": false },
+                    // Sin `codeActionLiteralSupport` el servidor solo puede
+                    // mandar comandos sueltos, no acciones con su edición.
+                    // `resolveSupport` le deja mandar la lista sin calcular
+                    // cada edición: rust-analyzer tarda mucho menos así.
+                    "codeAction": {
+                        "codeActionLiteralSupport": {
+                            "codeActionKind": {
+                                "valueSet": [
+                                    "", "quickfix", "refactor", "refactor.extract",
+                                    "refactor.inline", "refactor.rewrite", "source",
+                                    "source.organizeImports", "source.fixAll"
+                                ]
+                            }
+                        },
+                        "isPreferredSupport": true,
+                        "disabledSupport": true,
+                        "dataSupport": true,
+                        "resolveSupport": { "properties": ["edit"] }
+                    }
                 }
             }
         });
@@ -399,6 +439,61 @@ impl LspClient {
             }),
             Pending::Rename { nombre: nombre.to_string() },
         )
+    }
+
+    /// `range` va en coordenadas de LSP: ((línea, col UTF-16), (línea, col)).
+    /// `diagnosticos` son los del tramo tal como los mandó el servidor: los
+    /// usa para saber qué arreglar.
+    pub fn request_code_actions(
+        &mut self,
+        uri: &str,
+        range: ((usize, usize), (usize, usize)),
+        diagnosticos: Vec<Value>,
+        buffer: usize,
+        version: u64,
+    ) -> io::Result<u64> {
+        let ((l0, c0), (l1, c1)) = range;
+        self.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": l0, "character": c0 },
+                    "end": { "line": l1, "character": c1 }
+                },
+                // triggerKind 1: las pidió el usuario, no es un foco automático.
+                "context": { "diagnostics": diagnosticos, "triggerKind": 1 }
+            }),
+            Pending::CodeActions { buffer, version },
+        )
+    }
+
+    pub fn request_resolve_code_action(
+        &mut self,
+        accion: &Value,
+        buffer: usize,
+        version: u64,
+        titulo: String,
+    ) -> io::Result<u64> {
+        self.request(
+            "codeAction/resolve",
+            accion.clone(),
+            Pending::ResolverAccion { buffer, version, titulo },
+        )
+    }
+
+    /// `comando` es un `Command` de LSP: `{title, command, arguments}`.
+    pub fn execute_command(&mut self, comando: &Value, titulo: String) -> io::Result<u64> {
+        let mut params = json!({ "command": comando.get("command").cloned().unwrap_or(Value::Null) });
+        if let Some(args) = comando.get("arguments") {
+            params["arguments"] = args.clone();
+        }
+        self.request("workspace/executeCommand", params, Pending::Comando { titulo })
+    }
+
+    /// Contesta una petición del servidor con un resultado concreto.
+    pub fn respond(&mut self, id: Value, result: Value) {
+        let _ = write_message(&mut self.stdin, &json!({"jsonrpc": "2.0", "id": id, "result": result}));
     }
 
     /// Respuesta genérica a una petición que el propio servidor nos manda

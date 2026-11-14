@@ -20,7 +20,12 @@
 //! - renombre: todas las apariciones de la palabra del cursor;
 //! - firmas: `fn suma(a: i32, b: i32)` adentro de un paréntesis sin cerrar
 //!   de la línea, con el parámetro según las comas; afuera, nada;
-//! - formato: saca los espacios del final de cada línea.
+//! - formato: saca los espacios del final de cada línea;
+//! - code actions: por cada diagnóstico recibido, "Cambiar ERROR por ok"
+//!   (con su edición, preferida); "Poner en mayúsculas" la palabra del
+//!   tramo (sin edición: se completa con `codeAction/resolve`); "Borrar la
+//!   línea" (un comando que vuelve como `workspace/applyEdit`), y una
+//!   deshabilitada, que no se tiene que ver.
 
 use std::io::{self, BufRead, BufReader, Write};
 
@@ -125,7 +130,9 @@ fn main() {
                 "definitionProvider": true,
                 "renameProvider": true,
                 "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
-                "documentFormattingProvider": true
+                "documentFormattingProvider": true,
+                "codeActionProvider": {"resolveProvider": true},
+                "executeCommandProvider": {"commands": ["falso.borrar_linea"]}
             }}),
             "textDocument/didOpen" | "textDocument/didChange" => {
                 if metodo == "textDocument/didOpen" {
@@ -199,8 +206,46 @@ fn main() {
                 let limpio: String = texto.lines().map(|l| format!("{}\n", l.trim_end())).collect();
                 json!([{"range": rango(&texto, 0, texto.len()), "newText": limpio}])
             }
+            "textDocument/codeAction" => {
+                let r = &p["range"];
+                let byte = |q: &Value| byte_de(&texto, q["line"].as_u64().unwrap() as usize, q["character"].as_u64().unwrap() as usize);
+                let (a, b) = palabra_en(&texto, byte(&r["start"]));
+                let linea = r["start"]["line"].as_u64().unwrap_or(0);
+                let mut lista: Vec<Value> = p["context"]["diagnostics"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| d["message"] == "un ERROR")
+                    .map(|d| json!({"title": "Cambiar ERROR por ok", "kind": "quickfix", "isPreferred": true,
+                        "diagnostics": [d],
+                        "edit": {"changes": {uri.clone(): [{"range": d["range"], "newText": "ok"}]}}}))
+                    .collect();
+                lista.push(json!({"title": "Poner en mayúsculas", "kind": "refactor.rewrite",
+                    "data": {"desde": a, "hasta": b}}));
+                lista.push(json!({"title": "Borrar la línea", "kind": "refactor",
+                    "command": {"title": "Borrar la línea", "command": "falso.borrar_linea", "arguments": [linea]}}));
+                lista.push(json!({"title": "No se puede", "disabled": {"reason": "porque no"}}));
+                json!(lista)
+            }
+            "codeAction/resolve" => {
+                let (a, b) = (p["data"]["desde"].as_u64().unwrap() as usize, p["data"]["hasta"].as_u64().unwrap() as usize);
+                let mut accion = p.clone();
+                accion["edit"] = json!({"changes": {uri.clone(): [{"range": rango(&texto, a, b), "newText": texto[a..b].to_uppercase()}]}});
+                accion
+            }
+            "workspace/executeCommand" => {
+                let linea = p["arguments"][0].as_u64().unwrap_or(0) as usize;
+                let a = byte_de(&texto, linea, 0);
+                let b = byte_de(&texto, linea + 1, 0);
+                escribir(&mut salida, &json!({"jsonrpc": "2.0", "id": "srv-1", "method": "workspace/applyEdit",
+                    "params": {"label": "Línea borrada", "edit": {"changes": {uri.clone(): [{"range": rango(&texto, a, b), "newText": ""}]}}}}));
+                Value::Null
+            }
             "shutdown" => Value::Null,
             "exit" => return,
+            // Una respuesta de Flint a algo que le pidió el servidor (el
+            // `workspace/applyEdit`): no se contesta.
+            "" => continue,
             _ => {
                 // Notificaciones que no hacen falta (initialized, didSave…).
                 if msg.get("id").is_none() {

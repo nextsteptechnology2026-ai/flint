@@ -69,6 +69,8 @@ pub enum Action {
     GotoDefinition,
     /// Renombrar el símbolo bajo el cursor en todo el proyecto (LSP).
     RenamePrompt,
+    /// Arreglos rápidos y refactorizaciones que propone el servidor.
+    CodeActions,
     /// Abrir el buscador difuso de archivos del proyecto.
     FindFilePrompt,
     /// Buscar texto en todos los archivos del proyecto.
@@ -259,6 +261,9 @@ fn base_direct() -> HashMap<KeyChord, Binding> {
     d(KeyChord::plain(T::F(12)), GotoDefinition);
     d(KeyChord::plain(T::F(6)), RenamePrompt);
     d(KeyChord::plain(T::F(1)), Hover);
+    // Alt+Enter, como en los IDE de JetBrains. Ctrl+. (VS Code) no llega:
+    // una terminal en modo tradicional no le manda Ctrl a un punto.
+    d(KeyChord::with_alt(T::Enter), CodeActions);
     d(KeyChord::with_alt(T::Left), JumpBack);
     d(KeyChord::with_alt(T::Right), JumpForward);
     // Alt+Shift+F, como en VS Code. Shift sobre una letra ya va en la
@@ -330,6 +335,7 @@ fn base_normal() -> HashMap<KeyChord, Action> {
     m.insert(KeyChord::plain(Char('u')), Undo);
     m.insert(KeyChord::plain(Char('U')), Redo);
     m.insert(KeyChord::plain(Esc), EscapeKey);
+    m.insert(KeyChord::with_alt(Enter), CodeActions);
     m
 }
 
@@ -497,6 +503,7 @@ fn action_names() -> &'static [(&'static str, Action)] {
         ("goto_line", GotoLinePrompt),
         ("goto_definition", GotoDefinition),
         ("rename", RenamePrompt),
+        ("code_action", CodeActions),
         ("record_macro", MacroRecord),
         ("play_macro", MacroPlay),
     ]
@@ -634,6 +641,79 @@ pub fn parse_chord(s: &str) -> Result<KeyChord, String> {
         });
     }
     Ok(KeyChord { token, ctrl, shift, alt })
+}
+
+/// Cómo se escribe una tecla para mostrarla, con el mismo estilo que la
+/// barra de ayuda: `^S` para Ctrl, `Alt+←`, `Shift+Tab`, `F6`.
+pub fn chord_label(chord: &KeyChord) -> String {
+    let tecla = match chord.token {
+        // La terminal manda Ctrl+] como Ctrl+5 (ver `parse_chord`); se
+        // muestra como se escribe, no como llega.
+        KeyToken::Char('5') if chord.ctrl => "]".to_string(),
+        KeyToken::Char('4') if chord.ctrl => "\\".to_string(),
+        KeyToken::Char('6') if chord.ctrl => "^".to_string(),
+        KeyToken::Char('7') if chord.ctrl => "_".to_string(),
+        KeyToken::Char(' ') => "Espacio".to_string(),
+        // Una mayúscula con Ctrl o Alt es Shift+letra: se escribe así para
+        // que no parezca la misma tecla que la minúscula.
+        KeyToken::Char(c) if c.is_uppercase() && (chord.ctrl || chord.alt) => format!("Shift+{c}"),
+        KeyToken::Char(c) if chord.ctrl => c.to_uppercase().to_string(),
+        KeyToken::Char(c) => c.to_string(),
+        KeyToken::Left => "←".to_string(),
+        KeyToken::Right => "→".to_string(),
+        KeyToken::Up => "↑".to_string(),
+        KeyToken::Down => "↓".to_string(),
+        KeyToken::Home => "Inicio".to_string(),
+        KeyToken::End => "Fin".to_string(),
+        KeyToken::PageUp => "RePág".to_string(),
+        KeyToken::PageDown => "AvPág".to_string(),
+        KeyToken::Enter => "Enter".to_string(),
+        KeyToken::Tab => "Tab".to_string(),
+        KeyToken::Backspace => "Backspace".to_string(),
+        KeyToken::Delete => "Supr".to_string(),
+        KeyToken::Esc => "Esc".to_string(),
+        KeyToken::F(n) => format!("F{n}"),
+    };
+    let mut s = String::new();
+    if chord.alt {
+        s.push_str("Alt+");
+    }
+    if chord.shift {
+        s.push_str("Shift+");
+    }
+    if chord.ctrl {
+        // Como la barra de ayuda: `^S`, `^Espacio`.
+        s.push('^');
+    }
+    s.push_str(&tecla);
+    s
+}
+
+/// Las teclas que disparan `action` en la capa directa de `map`, ya
+/// escritas y ordenadas (las de un prefijo, como `^X ^S`, incluidas). F2
+/// no está en ninguna tabla porque se atiende antes que el keymap.
+pub fn keys_for(map: &Keymap, action: Action) -> Vec<String> {
+    if action == Action::ToggleModalLayer {
+        return vec!["F2".to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (chord, binding) in &map.direct {
+        match binding {
+            Binding::Do(a) if *a == action => out.push(chord_label(chord)),
+            Binding::Prefix(sub) => {
+                for (segunda, a) in sub {
+                    if *a == action {
+                        out.push(format!("{} {}", chord_label(chord), chord_label(segunda)));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // El HashMap no tiene orden: sin ordenar, la paleta cambiaría de un
+    // arranque a otro. Primero las más cortas (`^]` antes que `F12`).
+    out.sort_by(|a, b| a.chars().count().cmp(&b.chars().count()).then(a.cmp(b)));
+    out
 }
 
 /// Reemplaza (o borra, con `None`) lo que cuelga de `chord` en la capa

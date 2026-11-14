@@ -153,6 +153,7 @@ pub fn draw(f: &mut Frame, ed: &mut Editor, data: &FrameData, theme: &Theme) -> 
     let popup = match &ed.mode {
         Mode::Palette { selected, .. } => Some((" comandos ", *selected)),
         Mode::FilePicker { selected, .. } => Some((" archivos ", *selected)),
+        Mode::CodeActions { selected, .. } => Some((" arreglos ", *selected)),
         Mode::ProjectSearch { selected, .. } => Some((" en el proyecto ", *selected)),
         _ => None,
     };
@@ -269,6 +270,7 @@ fn draw_message(f: &mut Frame, ed: &Editor, area: Rect, theme: &Theme) {
         }
         Mode::Palette { query, .. } => format!(" Paleta de comandos › {query}"),
         Mode::FilePicker { query, .. } => format!(" Abrir archivo › {query}"),
+        Mode::CodeActions { query, .. } => format!(" Arreglos › {query}   · Enter aplica · Esc cancela"),
         Mode::Hover { .. } => " ↑↓ RePág AvPág desplazan · Esc cierra · cualquier otra tecla sigue editando".to_string(),
         Mode::ProjectSearch { query, resumen, regex, .. } => {
             let modo = if *regex { "regex" } else { "texto" };

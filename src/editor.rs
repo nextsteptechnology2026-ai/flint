@@ -130,6 +130,10 @@ pub struct Diagnostic {
     pub end_col: usize,
     pub severity: Severity,
     pub message: String,
+    /// El diagnóstico tal como lo mandó el servidor. Se le devuelve igual al
+    /// pedir arreglos: lo reconoce por sus campos (`code`, `data`…), que
+    /// Flint no necesita entender.
+    pub raw: serde_json::Value,
 }
 
 #[derive(Clone, Default)]
@@ -226,6 +230,9 @@ pub enum Mode {
     /// se escribe, cuál está resaltada y el resumen de la última búsqueda
     /// ("12 en 3 archivos") para mostrarlo al lado.
     ProjectSearch { query: String, selected: usize, resumen: String, regex: bool },
+    /// La lista de arreglos rápidos y refactorizaciones (Alt+Enter). Las
+    /// acciones viven en `App`, como los comandos de la paleta.
+    CodeActions { query: String, selected: usize },
     /// La ventana de hover (F1) abierta junto al cursor. Las líneas ya
     /// dibujadas viven en `App`; acá solo cuánto se desplazó.
     Hover { offset: usize },

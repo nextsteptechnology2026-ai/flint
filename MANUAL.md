@@ -64,6 +64,7 @@ Los atajos con `Ctrl` (guardar, buscar, deshacer, diagnósticos, paleta de coman
 | `F1` | Tipo y documentación de lo que está bajo el cursor (LSP) |
 | `Ctrl+]` o `F12` | Ir a la definición del nombre bajo el cursor (LSP) |
 | `F6` | Renombrar el nombre bajo el cursor en todo el proyecto (LSP) |
+| `Alt+Enter` | Arreglos rápidos y refactorizaciones que propone el servidor (LSP) |
 | `Alt+Shift+F` | Formatear el archivo (LSP) |
 | `Alt+←` / `Alt+→` | Volver a donde estabas antes de un salto / rehacer el salto |
 | `Ctrl+K` | Comentar / descomentar las líneas que toca la selección |
@@ -98,6 +99,7 @@ La paleta de comandos (`Ctrl+P`) también tiene "Buscar (regex)…" y "Reemplaza
 | `K` | Tipo y documentación de lo que está bajo el cursor (LSP), como en Vim y Helix |
 | `D` | Ir a la definición (LSP) |
 | `r` | Renombrar el nombre bajo el cursor en todo el proyecto (LSP) |
+| `Alt+Enter` | Arreglos rápidos y refactorizaciones (LSP) |
 | `=` | Formatear el archivo (LSP) |
 | `d` | Cortar: borra el rango si hay selección (si no, el carácter siguiente) y lo manda al portapapeles del sistema — se puede pegar después con `p`, o en cualquier otra aplicación |
 | `c` | Cambiar: corta la selección (si hay, igual que `d`) y entra a INSERT |
@@ -170,11 +172,52 @@ Flint puede tener varios archivos abiertos al mismo tiempo, cada uno con su prop
 
 **El servidor arranca sin frenar**: el archivo se ve y se puede editar apenas se abre, mientras la barra dice "Iniciando…". En ese rato todavía no hay diagnósticos ni autocompletado del servidor; cuando contesta, recibe el archivo tal como está, con lo que se haya escrito mientras tanto, y la barra dice qué sabe hacer. Los archivos del mismo lenguaje que se abran en ese rato se suman al quedar listo. Si no contesta en 20 s o se cierra al arrancar, se sigue sin LSP y la barra dice por qué.
 
+## Ver dos archivos a la vez (tmux)
+
+Flint no divide su pantalla en paneles: para ver dos archivos lado a lado
+—o el mismo archivo en dos lugares— se abren dos Flint en dos paneles de
+[tmux](https://github.com/tmux/tmux), que ya hace eso y bien. Cada Flint es
+independiente, con su cursor y su scroll.
+
+```
+sudo apt install tmux     # si no está
+tmux                      # abre una sesión
+flint main.rs             # el primer archivo
+```
+
+Después, `Ctrl+B` y soltar, seguido de:
+
+| Tecla | Qué hace |
+|---|---|
+| `%` | Partir en dos, lado a lado (el panel nuevo abre una terminal: ahí `flint otro.rs`) |
+| `"` | Partir en dos, uno arriba del otro |
+| `←` `→` `↑` `↓` | Pasar al panel de ese lado |
+| `z` | Agrandar el panel actual a toda la pantalla, y volver |
+| `x` | Cerrar el panel (pregunta antes) |
+
+Para ver el mismo archivo en los dos paneles, se abre el mismo archivo en
+los dos Flint. Son dos copias: lo que se escribe en uno no aparece en el
+otro. Conviene editar en uno solo y usar el otro para mirar; si se llega a
+guardar en los dos, el segundo pregunta antes de pisar lo que guardó el
+primero (ver [Respaldos y cambios en el disco](#respaldos-y-cambios-en-el-disco)).
+
+Dos cosas a tener en cuenta adentro de tmux:
+
+- **`Ctrl+B` es de tmux**, así que no le llega a Flint, donde repite la
+  macro. Para mandárselo, apretarlo dos veces: `Ctrl+B Ctrl+B`. O atar
+  `play_macro` a otra tecla en `[keys]`.
+- **`Esc` con demora**: las versiones de tmux anteriores a la 3.5 esperan
+  medio segundo después de cada `Esc` por si viene una tecla con `Alt`, y
+  salir de INSERT en la capa modal se siente lento. Se arregla con
+  `set -sg escape-time 10` en `~/.tmux.conf`.
+
 ## Paleta de comandos (`Ctrl+P`)
 
 Lista todo lo que Flint sabe hacer, con filtro difuso mientras se escribe (no hace falta el nombre exacto ni el orden exacto de las letras). `↑`/`↓` para moverse, `Enter` para ejecutar, `Esc` para cancelar.
 
-Incluye: Guardar, Salir, Buscar (literal y regex), Reemplazar (literal y regex), Deshacer, Rehacer, Saltar al siguiente diagnóstico, Autocompletar, Alternar capa modal, Alternar ajuste de línea, Vista previa de Markdown, Seleccionar siguiente aparición, Indentar/Des-indentar líneas, Comentar/descomentar, Saltar al par, Abrir archivo, Abrir archivo del proyecto, Buscar texto en el proyecto, Ir a la línea, Ir a la definición, Renombrar el símbolo, Qué es esto (tipo y documentación), Parámetros de la llamada, Formatear el archivo, Volver al lugar anterior / Avanzar al siguiente, Grabar y repetir macro, Siguiente/anterior buffer, Cerrar buffer, cambiar de perfil de teclado (Flint/Vim/Emacs), y cualquier comando que un plugin de Lua haya registrado.
+Cada renglón muestra su atajo entre paréntesis y el nombre de la acción para `[keys]`: `Guardar (^S) · save`. El atajo sale del perfil de teclado activo con los remapeos ya aplicados, así que siempre es el que de verdad funciona: con el perfil Emacs, Guardar dice `(^X ^S)`. Las acciones sin atajo de fábrica no muestran ninguno.
+
+Incluye: Guardar, Salir, Buscar (literal y regex), Reemplazar (literal y regex), Deshacer, Rehacer, Saltar al siguiente diagnóstico, Autocompletar, Alternar capa modal, Alternar ajuste de línea, Vista previa de Markdown, Seleccionar siguiente aparición, Indentar/Des-indentar líneas, Comentar/descomentar, Saltar al par, Abrir archivo, Abrir archivo del proyecto, Buscar texto en el proyecto, Ir a la línea, Ir a la definición, Renombrar el símbolo, Arreglos rápidos y refactorizaciones, Qué es esto (tipo y documentación), Parámetros de la llamada, Formatear el archivo, Volver al lugar anterior / Avanzar al siguiente, Grabar y repetir macro, Siguiente/anterior buffer, Cerrar buffer, cambiar de perfil de teclado (Flint/Vim/Emacs), y cualquier comando que un plugin de Lua haya registrado.
 
 **Ir a la línea** no tiene atajo de fábrica: se abre desde la paleta, o atando `goto_line` a una tecla en `[keys]`. Pide un número de línea y salta ahí (el salto queda en la [lista de saltos](#lista-de-saltos-alt-alt)).
 
@@ -624,6 +667,37 @@ Una nota sobre `Ctrl+]`: una terminal en modo tradicional no puede
 distinguirlo de `Ctrl+5`, porque las dos mandan el mismo byte. Flint ata las
 dos a lo mismo, así que la tecla clásica funciona; y si escribís `"ctrl+]"` en
 `[keys]` del config.toml, se traduce sola.
+
+## Arreglos rápidos y refactorizaciones (`Alt+Enter`, LSP)
+
+`Alt+Enter` le pregunta al servidor qué puede hacer donde está el cursor, o
+con lo seleccionado, y lo muestra en una lista igual a la de la paleta:
+arreglos para los diagnósticos ("importar `HashMap`", "agregar `mut`") y
+refactorizaciones ("extraer a una función", "agregar el tipo explícito",
+"inline variable"). Lo que ofrece depende enteramente del servidor.
+
+- `↑`/`↓` eligen, `Enter` aplica, `Esc` cierra sin hacer nada. Escribir
+  filtra la lista, como en la paleta.
+- Si el servidor marca uno como el arreglo obvio para el error, va primero:
+  `Alt+Enter`, `Enter` lo aplica sin buscarlo.
+- Con el cursor en una línea con un diagnóstico pero fuera de él (`Ctrl+G`
+  deja el cursor al principio de la línea), se pregunta por el diagnóstico:
+  `Ctrl+G`, `Alt+Enter` es el camino corto para arreglar el siguiente error.
+- Los cambios se aplican igual que un [renombre](#ir-a-la-definición-y-renombrar-lsp):
+  si tocan archivos que no estaban abiertos, quedan abiertos y sin guardar,
+  y un `Ctrl+Z` deshace el cambio entero de cada archivo.
+- Si se edita el archivo antes de que el servidor conteste, la lista no se
+  abre: sus cambios apuntarían a un texto que ya no existe. Se vuelve a pedir.
+- Algunas acciones son comandos que corre el servidor y que después le
+  mandan a Flint los cambios (`workspace/applyEdit`); eso también funciona.
+
+Necesita un servidor que anuncie que sabe hacerlo (`codeActionProvider`).
+rust-analyzer lo hace siempre; pylsp, con plugins como `pylsp-rope` o
+`python-lsp-ruff`.
+
+Una nota sobre la tecla: `Ctrl+.`, la de VS Code, no llega a los programas
+en una terminal en modo tradicional. Si tu terminal usa `Alt+Enter` para
+pantalla completa, atá `code_action` a otra tecla en `[keys]`.
 
 ## Hover: qué es esto (`F1`, LSP)
 
